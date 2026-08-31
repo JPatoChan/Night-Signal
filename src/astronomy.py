@@ -5,14 +5,6 @@ from zoneinfo import ZoneInfo
 from skyfield.api import Topos, load
 from skyfield import almanac
 
-from config import LOCATION
-
-
-# Configured observer location
-OBSERVER_LOCATION = Topos(latitude_degrees=LOCATION.latitude, longitude_degrees=LOCATION.longitude)
-
-# Configured local timezone for display times (handles DST correctly)
-LOCAL_TIMEZONE = ZoneInfo(LOCATION.timezone)
 
 # Planet identifiers in Skyfield ephemeris
 PLANET_NAMES = ["mercury barycenter", "venus barycenter", "mars barycenter", 
@@ -55,13 +47,13 @@ def _get_ephemeris_and_timescale():
     return _ephemeris, _timescale
 
 
-def _format_local_time(t):
-    """Format a Skyfield Time as a local time string in the configured timezone."""
-    local_dt = t.utc_datetime().astimezone(LOCAL_TIMEZONE)
+def _format_local_time(t, timezone):
+    """Format a Skyfield Time as a local time string in the given timezone."""
+    local_dt = t.utc_datetime().astimezone(timezone)
     return local_dt.strftime("%I:%M %p %Z").lstrip("0")
 
 
-def _find_tonights_window(ephemeris, ts):
+def _find_tonights_window(ephemeris, ts, observer_topos):
     """Find the current or upcoming night's sunset and astronomical twilight bounds.
 
     Searches a 48-hour span centered on now for the dark-of-night interval
@@ -79,7 +71,7 @@ def _find_tonights_window(ephemeris, ts):
     t0 = ts.tt_jd(now.tt - 1)
     t1 = ts.tt_jd(now.tt + 1)
 
-    twilight_function = almanac.dark_twilight_day(ephemeris, OBSERVER_LOCATION)
+    twilight_function = almanac.dark_twilight_day(ephemeris, observer_topos)
     times, values = almanac.find_discrete(t0, t1, twilight_function)
     transitions = list(zip(times, values))
 
@@ -103,8 +95,11 @@ def _find_tonights_window(ephemeris, ts):
     return None, None, None
 
 
-def get_observing_window():
+def get_observing_window(location):
     """Return tonight's sunset and dark astronomical observing window.
+
+    Args:
+        location (Location): Observer location to calculate the window for.
 
     Returns:
         dict: Contains 'sunset', 'evening_twilight_end', and
@@ -112,20 +107,22 @@ def get_observing_window():
         values if the window could not be determined.
     """
     ephemeris, ts = _get_ephemeris_and_timescale()
-    sunset_time, evening_twilight_end_time, morning_twilight_begin_time = _find_tonights_window(ephemeris, ts)
+    observer_topos = Topos(latitude_degrees=location.latitude, longitude_degrees=location.longitude)
+    timezone = ZoneInfo(location.timezone)
+    sunset_time, evening_twilight_end_time, morning_twilight_begin_time = _find_tonights_window(ephemeris, ts, observer_topos)
 
     return {
-        "sunset": _format_local_time(sunset_time) if sunset_time is not None else None,
-        "evening_twilight_end": _format_local_time(evening_twilight_end_time) if evening_twilight_end_time is not None else None,
-        "morning_twilight_begin": _format_local_time(morning_twilight_begin_time) if morning_twilight_begin_time is not None else None
+        "sunset": _format_local_time(sunset_time, timezone) if sunset_time is not None else None,
+        "evening_twilight_end": _format_local_time(evening_twilight_end_time, timezone) if evening_twilight_end_time is not None else None,
+        "morning_twilight_begin": _format_local_time(morning_twilight_begin_time, timezone) if morning_twilight_begin_time is not None else None
     }
 
 
-def get_target_list():
+def get_target_list(location):
     """Calculate planets worth observing during tonight's full dark window.
 
     Uses Skyfield to find the dark astronomical observing window for
-    the configured observer location (evening astronomical twilight end
+    the given observer location (evening astronomical twilight end
     through morning astronomical twilight begin), then scans that window for each
     planet's peak altitude, best viewing time, and observable duration.
     Only planets that rise above the horizon at some point during the
@@ -133,6 +130,9 @@ def get_target_list():
 
     Apparent magnitudes are approximate placeholders and do not account for
     orbital distance or phase angle variations.
+
+    Args:
+        location (Location): Observer location to calculate targets for.
 
     Returns:
         list: List of dicts with name, max_altitude (degrees),
@@ -142,9 +142,11 @@ def get_target_list():
     try:
         ephemeris, ts = _get_ephemeris_and_timescale()
         earth = ephemeris["earth"]
-        observer = earth + OBSERVER_LOCATION
+        observer_topos = Topos(latitude_degrees=location.latitude, longitude_degrees=location.longitude)
+        observer = earth + observer_topos
+        timezone = ZoneInfo(location.timezone)
 
-        _, window_start, window_end = _find_tonights_window(ephemeris, ts)
+        _, window_start, window_end = _find_tonights_window(ephemeris, ts, observer_topos)
         if window_start is None or window_end is None:
             raise Exception("Could not determine tonight's observing window")
 
@@ -170,7 +172,7 @@ def get_target_list():
 
                 max_index = int(np.argmax(altitude_degrees))
                 max_altitude = float(altitude_degrees[max_index])
-                best_viewing_time = _format_local_time(sample_times[max_index])
+                best_viewing_time = _format_local_time(sample_times[max_index], timezone)
 
                 above_indices = np.where(above_horizon)[0]
                 first_index, last_index = above_indices[0], above_indices[-1]

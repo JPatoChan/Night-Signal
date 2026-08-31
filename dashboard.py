@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from weather import get_observing_conditions
 from astronomy import get_target_list, get_observing_window
 from scoring import calculate_visibility_score
-from config import LOCATION
+from config import PRESET_LOCATIONS, DEFAULT_LOCATION
 
 
 # Custom CSS for dark space theme
@@ -296,17 +296,23 @@ def main():
         page_title="Night Signal",
         page_icon="🌌",
         layout="wide",
-        initial_sidebar_state="collapsed"
+        initial_sidebar_state="expanded"
     )
 
     # Set custom theme
     set_custom_theme()
-    
+
+    # Location selector (sidebar, unobtrusive)
+    location_names = [location.name for location in PRESET_LOCATIONS]
+    default_index = PRESET_LOCATIONS.index(DEFAULT_LOCATION)
+    selected_name = st.sidebar.selectbox("Observing location", location_names, index=default_index)
+    location = PRESET_LOCATIONS[location_names.index(selected_name)]
+
     # Header
     st.markdown(f"""
     <div style="text-align: center; margin-bottom: 2rem;">
         <div style="font-size: 3rem; margin-bottom: 0.5rem;">🌌 Night Signal</div>
-        <div style="font-size: 1.2rem; color: #60a5fa;">{LOCATION.name}</div>
+        <div style="font-size: 1.2rem; color: #60a5fa;">{location.name}</div>
         <div style="font-size: 0.95rem; color: #a0aec0; margin-top: 0.5rem; font-style: italic;">Listening to the sky...</div>
     </div>
     """, unsafe_allow_html=True)
@@ -324,11 +330,11 @@ def main():
     
     try:
         with st.spinner("📡 Listening to the sky..."):
-            targets = get_target_list()
-            window = get_observing_window()
+            targets = get_target_list(location)
+            window = get_observing_window(location)
 
         try:
-            conditions = get_observing_conditions()
+            conditions = get_observing_conditions(location)
         except Exception as error:
             conditions = None
             st.warning(f"Weather signal unavailable. Astronomy data is still available. ({error})")

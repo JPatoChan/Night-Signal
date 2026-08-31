@@ -1,14 +1,16 @@
 from weather import get_observing_conditions
 from astronomy import get_observing_window, get_target_list
 from briefing import generate_report
+from config import DEFAULT_LOCATION
 
 
 def main():
     print("Night Signal online.")
     print("Listening to the sky...")
 
-    targets = get_target_list()
-    window = get_observing_window()
+    location = DEFAULT_LOCATION
+    targets = get_target_list(location)
+    window = get_observing_window(location)
 
     print(f"Sunset: {window['sunset']}")
     print(
@@ -17,7 +19,7 @@ def main():
     )
 
     try:
-        conditions = get_observing_conditions()
+        conditions = get_observing_conditions(location)
     except Exception as error:
         print(f"\nWeather signal unavailable: {error}")
         print("Weather-dependent visibility scoring is unavailable.\n")

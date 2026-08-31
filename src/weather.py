@@ -5,21 +5,17 @@ import time
 import urllib.request
 import urllib.error
 
-from config import LOCATION
-
-
-# Shared location for forecast
-LATITUDE = LOCATION.latitude
-LONGITUDE = LOCATION.longitude
-
 
 class WeatherFetchError(Exception):
     """Raised when Open-Meteo cannot provide current weather data."""
 
 
-def get_observing_conditions():
+def get_observing_conditions(location):
     """Fetch current observing conditions from Open-Meteo Forecast API.
-    
+
+    Args:
+        location (Location): Observer location to fetch conditions for.
+
     Returns:
         dict: Contains cloud_cover (%), visibility (km), and temperature (°C)
         
@@ -29,8 +25,8 @@ def get_observing_conditions():
     try:
         # Build API request
         params = {
-            "latitude": LATITUDE,
-            "longitude": LONGITUDE,
+            "latitude": location.latitude,
+            "longitude": location.longitude,
             "current": "cloud_cover,visibility,temperature",
             "timezone": "UTC"
         }
