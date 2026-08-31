@@ -1,1 +1,2 @@
 skyfield>=1.45
+streamlit>=1.28.0
