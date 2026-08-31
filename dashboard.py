@@ -7,6 +7,11 @@ from pathlib import Path
 import folium
 from streamlit_folium import st_folium
 from timezonefinder import TimezoneFinder
+from geopy.geocoders import Nominatim
+import logging
+
+# Suppress verbose geopy logging
+logging.getLogger('geopy.geocoders').setLevel(logging.WARNING)
 
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
@@ -185,6 +190,66 @@ def get_timezone_from_coordinates(latitude, longitude):
         return "UTC"
 
 
+def get_location_name_from_coordinates(latitude, longitude):
+    """Resolve human-readable location name from coordinates using reverse geocoding.
+
+    Uses OpenStreetMap Nominatim service. Prefers city/town/village/municipality
+    names, includes state/region when available, and falls back gracefully.
+
+    Args:
+        latitude (float): Latitude in decimal degrees.
+        longitude (float): Longitude in decimal degrees.
+
+    Returns:
+        str: Human-readable location name, or fallback if resolution fails.
+    """
+    try:
+        # Initialize Nominatim geocoder with Night Signal user agent (required by OSM)
+        geolocator = Nominatim(user_agent="night-signal-observatory")
+
+        # Reverse geocode with timeout to avoid hanging Streamlit
+        location = geolocator.reverse(f"{latitude}, {longitude}", timeout=5, language="en")
+
+        if not location or not location.raw:
+            return f"Selected location ({latitude:.4f}, {longitude:.4f})"
+
+        # Use Nominatim's structured address fields rather than splitting the
+        # free-form display string, so a street/neighborhood/county isn't
+        # mistaken for the locality name
+        address = location.raw.get("address", {})
+
+        # Prefer the most specific locality field available
+        locality = (
+            address.get("city")
+            or address.get("town")
+            or address.get("village")
+            or address.get("municipality")
+            or address.get("hamlet")
+            or address.get("suburb")
+        )
+
+        # Prefer state, fall back to region or state_district
+        region = address.get("state") or address.get("region") or address.get("state_district")
+
+        country = address.get("country")
+
+        if locality and region:
+            return f"{locality}, {region}"
+        if locality:
+            return locality
+        if region and country:
+            return f"{region}, {country}"
+        if country:
+            return country
+
+        # Ultimate fallback: coordinates
+        return f"Selected location ({latitude:.4f}, {longitude:.4f})"
+
+    except Exception:
+        # Fail gracefully: astronomy/weather still work using coordinates
+        return f"Selected location ({latitude:.4f}, {longitude:.4f})"
+
+
 def render_map_picker():
     """Render an interactive map for location selection.
 
@@ -246,8 +311,17 @@ def handle_map_click(map_data):
         # Resolve timezone
         tz = get_timezone_from_coordinates(lat, lng)
 
+        # Resolve location name via reverse geocoding
+        # Store the resolved name in session state so we don't re-geocode on every rerun
+        if "clicked_location_name" not in st.session_state or st.session_state.get("clicked_location_name_coords") != (lat, lng):
+            location_name = get_location_name_from_coordinates(lat, lng)
+            st.session_state.clicked_location_name = location_name
+            st.session_state.clicked_location_name_coords = (lat, lng)
+        else:
+            location_name = st.session_state.clicked_location_name
+
         return Location(
-            name="Selected location",
+            name=location_name,
             latitude=lat,
             longitude=lng,
             timezone=tz
@@ -395,6 +469,10 @@ def main():
     # Initialize session state for map clicks
     if "clicked_location" not in st.session_state:
         st.session_state.clicked_location = None
+    if "clicked_location_name" not in st.session_state:
+        st.session_state.clicked_location_name = None
+    if "clicked_location_name_coords" not in st.session_state:
+        st.session_state.clicked_location_name_coords = None
 
     # Set custom theme
     set_custom_theme()
@@ -431,8 +509,10 @@ def main():
             # Restore from session state if map hasn't been clicked again
             clicked = st.session_state.clicked_location
             tz = get_timezone_from_coordinates(clicked["latitude"], clicked["longitude"])
+            # Use cached location name if available, otherwise use fallback
+            location_name = st.session_state.clicked_location_name or f"Selected location ({clicked['latitude']:.4f}, {clicked['longitude']:.4f})"
             location = Location(
-                name="Selected location",
+                name=location_name,
                 latitude=clicked["latitude"],
                 longitude=clicked["longitude"],
                 timezone=tz
