@@ -4,13 +4,17 @@ import streamlit as st
 import sys
 from pathlib import Path
 
+import folium
+from streamlit_folium import st_folium
+from timezonefinder import TimezoneFinder
+
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from weather import get_observing_conditions
 from astronomy import get_target_list, get_observing_window
 from scoring import calculate_visibility_score
-from config import PRESET_LOCATIONS, DEFAULT_LOCATION
+from config import PRESET_LOCATIONS, DEFAULT_LOCATION, Location
 
 
 # Custom CSS for dark space theme
@@ -20,20 +24,20 @@ def set_custom_theme():
     <style>
     /* Import Montserrat font family from Google Fonts */
     @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap');
-    
+
     /* Dark space background */
     .stApp {
         background: linear-gradient(135deg, #0a0e27 0%, #16213e 100%);
         color: #e0e6ff;
         font-family: 'Montserrat', sans-serif;
     }
-    
+
     /* Main container */
     [data-testid="stMainBlockContainer"] {
         padding: 2rem;
         background: transparent;
     }
-    
+
     /* Headers and text - Montserrat for all */
     h1, h2, h3 {
         color: #b4d7ff;
@@ -42,12 +46,12 @@ def set_custom_theme():
         font-weight: 700;
         letter-spacing: -0.02em;
     }
-    
+
     /* Body text - Montserrat */
     p, span, div {
         font-family: 'Montserrat', sans-serif;
     }
-    
+
     /* Custom card styling using columns */
     .stContainer {
         background-color: rgba(22, 33, 62, 0.6);
@@ -57,7 +61,7 @@ def set_custom_theme():
         backdrop-filter: blur(10px);
         font-family: 'Montserrat', sans-serif;
     }
-    
+
     /* Button styling - Montserrat */
     .stButton > button {
         background: linear-gradient(90deg, #6366f1 0%, #a78bfa 100%);
@@ -69,12 +73,12 @@ def set_custom_theme():
         text-shadow: 0 0 5px rgba(99, 102, 241, 0.5);
         transition: all 0.3s ease;
     }
-    
+
     .stButton > button:hover {
         box-shadow: 0 0 20px rgba(99, 102, 241, 0.8);
         transform: scale(1.05);
     }
-    
+
     /* Metric cards - Montserrat for labels and values */
     .metric-card {
         background-color: rgba(99, 102, 241, 0.1);
@@ -86,7 +90,7 @@ def set_custom_theme():
         text-align: center;
         font-family: 'Montserrat', sans-serif;
     }
-    
+
     /* Priority target highlight - Montserrat for all */
     .priority-card {
         background: linear-gradient(135deg, rgba(99, 102, 241, 0.2) 0%, rgba(167, 139, 250, 0.15) 100%);
@@ -98,21 +102,21 @@ def set_custom_theme():
         backdrop-filter: blur(10px);
         font-family: 'Montserrat', sans-serif;
     }
-    
+
     .priority-card > div:first-child {
         font-family: 'Montserrat', sans-serif;
         font-weight: 700;
     }
-    
+
     .priority-card > div:nth-child(2) {
         font-family: 'Montserrat', sans-serif;
         font-weight: 700;
     }
-    
+
     .priority-card > div:nth-child(n+3) {
         font-family: 'Montserrat', sans-serif;
     }
-    
+
     /* Target list items - Montserrat */
     .target-item {
         background-color: rgba(34, 211, 238, 0.08);
@@ -122,7 +126,7 @@ def set_custom_theme():
         margin: 0.5rem 0;
         font-family: 'Montserrat', sans-serif;
     }
-    
+
     /* Conditions display */
     .condition-excellent {
         color: #4ade80;
@@ -130,21 +134,21 @@ def set_custom_theme():
         font-family: 'Montserrat', sans-serif;
         font-weight: 600;
     }
-    
+
     .condition-good {
         color: #60a5fa;
         text-shadow: 0 0 10px rgba(96, 165, 250, 0.5);
         font-family: 'Montserrat', sans-serif;
         font-weight: 600;
     }
-    
+
     .condition-poor {
         color: #f87171;
         text-shadow: 0 0 10px rgba(248, 113, 113, 0.5);
         font-family: 'Montserrat', sans-serif;
         font-weight: 600;
     }
-    
+
     /* Sparkle/star decorations - Montserrat */
     .stars {
         color: #fde047;
@@ -152,7 +156,7 @@ def set_custom_theme():
         font-family: 'Montserrat', sans-serif;
         font-weight: 700;
     }
-    
+
     /* Caption and subtitle - Montserrat */
     .stCaption {
         color: #a0aec0;
@@ -163,12 +167,101 @@ def set_custom_theme():
     """, unsafe_allow_html=True)
 
 
+def get_timezone_from_coordinates(latitude, longitude):
+    """Resolve IANA timezone name from latitude/longitude coordinates.
+
+    Args:
+        latitude (float): Latitude in decimal degrees.
+        longitude (float): Longitude in decimal degrees.
+
+    Returns:
+        str: IANA timezone name, or 'UTC' if resolution fails.
+    """
+    try:
+        tf = TimezoneFinder()
+        tz = tf.timezone_at(lat=latitude, lng=longitude)
+        return tz if tz else "UTC"
+    except Exception:
+        return "UTC"
+
+
+def render_map_picker():
+    """Render an interactive map for location selection.
+
+    Returns:
+        dict: Map data from the last interaction, or None if no interaction.
+    """
+    st.markdown("### 🗺️ Click a location on the map")
+
+    # Create the map with dark USGS satellite imagery
+    center_lat, center_lon = 39.8283, -98.5795  # Center of USA
+    m = folium.Map(
+        location=[center_lat, center_lon],
+        zoom_start=4,
+        tiles="USGS.USImagery"
+    )
+
+    # Add reference layer with boundaries and place labels on top
+    folium.TileLayer(
+        tiles='https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+        attr='Tiles &copy; Esri',
+        name='Reference Labels',
+        overlay=True,
+        control=False,
+        opacity=0.7
+    ).add_to(m)
+
+    # Add a marker for the current clicked location if available in session
+    if "clicked_location" in st.session_state and st.session_state.clicked_location:
+        clicked = st.session_state.clicked_location
+        folium.Marker(
+            location=[clicked["latitude"], clicked["longitude"]],
+            popup=f"{clicked['latitude']:.4f}, {clicked['longitude']:.4f}",
+            icon=folium.Icon(color="violet", icon="star", prefix="fa")
+        ).add_to(m)
+
+    # Render map with responsive width (uses full container width)
+    map_data = st_folium(m, width=None, height=500)
+
+    return map_data
+
+
+def handle_map_click(map_data):
+    """Handle map click events and update session state.
+
+    Args:
+        map_data (dict): Data from st_folium interaction.
+
+    Returns:
+        Location: Temporary Location object from clicked coordinates, or None if no click.
+    """
+    if map_data and map_data.get("last_clicked"):
+        clicked = map_data["last_clicked"]
+        lat = clicked["lat"]
+        lng = clicked["lng"]
+
+        # Store in session state
+        st.session_state.clicked_location = {"latitude": lat, "longitude": lng}
+
+        # Resolve timezone
+        tz = get_timezone_from_coordinates(lat, lng)
+
+        return Location(
+            name="Selected location",
+            latitude=lat,
+            longitude=lng,
+            timezone=tz
+        )
+
+    return None
+
+
 def render_weather_section(conditions):
     """Render the weather conditions section."""
     st.markdown("### 🌌 Tonight's Conditions")
-    
+
     col1, col2, col3, col4 = st.columns(4)
-    
+
     with col1:
         st.markdown(f"""
         <div class="metric-card">
@@ -176,7 +269,7 @@ def render_weather_section(conditions):
             <div style="font-size: 1.5rem; color: #fde047; font-weight: bold;">{conditions['cloud_cover']:.0f}%</div>
         </div>
         """, unsafe_allow_html=True)
-    
+
     with col2:
         st.markdown(f"""
         <div class="metric-card">
@@ -184,7 +277,7 @@ def render_weather_section(conditions):
             <div style="font-size: 1.5rem; color: #60a5fa; font-weight: bold;">{conditions['visibility']:.1f} km</div>
         </div>
         """, unsafe_allow_html=True)
-    
+
     with col3:
         st.markdown(f"""
         <div class="metric-card">
@@ -192,7 +285,7 @@ def render_weather_section(conditions):
             <div style="font-size: 1.5rem; color: #f0abfc; font-weight: bold;">{conditions['temperature']:.1f}°C</div>
         </div>
         """, unsafe_allow_html=True)
-    
+
     with col4:
         # Determine condition quality
         cloud_cover = conditions.get("cloud_cover", 0)
@@ -205,7 +298,7 @@ def render_weather_section(conditions):
         else:
             condition = "POOR"
             color = "condition-poor"
-        
+
         st.markdown(f"""
         <div class="metric-card">
             <div style="font-size: 0.8rem; color: #a0aec0;">CONDITIONS</div>
@@ -217,7 +310,7 @@ def render_weather_section(conditions):
 def render_targets_section(conditions, targets, window):
     """Render the targets section with priority target and list."""
     st.markdown("### 🛸 Transmission Targets")
-    
+
     if window.get("evening_twilight_end") and window.get("morning_twilight_begin"):
         sunset_line = f"Sunset: <span style=\"color: #b4d7ff;\">{window['sunset']}</span> | " if window.get("sunset") else ""
         st.markdown(f"""
@@ -229,7 +322,7 @@ def render_targets_section(conditions, targets, window):
     if not targets:
         st.warning("⚠️ No suspicious extraterrestrial activity detected. No planets are observable during tonight's dark window.")
         return
-    
+
     if conditions is not None:
         scored_targets = []
         for target in targets:
@@ -260,7 +353,7 @@ def render_targets_section(conditions, targets, window):
             </div>
         </div>
         """, unsafe_allow_html=True)
-    
+
     # Show all targets
     st.markdown("#### All Observable Targets")
     for target in scored_targets:
@@ -299,14 +392,56 @@ def main():
         initial_sidebar_state="expanded"
     )
 
+    # Initialize session state for map clicks
+    if "clicked_location" not in st.session_state:
+        st.session_state.clicked_location = None
+
     # Set custom theme
     set_custom_theme()
 
-    # Location selector (sidebar, unobtrusive)
-    location_names = [location.name for location in PRESET_LOCATIONS]
-    default_index = PRESET_LOCATIONS.index(DEFAULT_LOCATION)
-    selected_name = st.sidebar.selectbox("Observing location", location_names, index=default_index)
-    location = PRESET_LOCATIONS[location_names.index(selected_name)]
+    # Location selector (sidebar, preset or map-based)
+    with st.sidebar:
+        st.markdown("## 📍 Observing Location")
+
+        location_source = st.radio(
+            "Choose location:",
+            ["Preset", "Click Map"],
+            horizontal=False
+        )
+
+        if location_source == "Preset":
+            location_names = [location.name for location in PRESET_LOCATIONS]
+            default_index = PRESET_LOCATIONS.index(DEFAULT_LOCATION)
+            selected_name = st.selectbox("Select preset:", location_names, index=default_index)
+            location = PRESET_LOCATIONS[location_names.index(selected_name)]
+            # Clear any prior map click when switching to preset
+            st.session_state.clicked_location = None
+        else:
+            st.markdown("**Using map below — click to select a location**")
+            location = None  # Will be set after map interaction
+
+    # Render map in main area
+    if location_source == "Click Map":
+        map_data = render_map_picker()
+        clicked_location = handle_map_click(map_data)
+        if clicked_location:
+            location = clicked_location
+            st.sidebar.success(f"✓ Location: {location.latitude:.4f}, {location.longitude:.4f}\nTimezone: {location.timezone}")
+        elif st.session_state.clicked_location:
+            # Restore from session state if map hasn't been clicked again
+            clicked = st.session_state.clicked_location
+            tz = get_timezone_from_coordinates(clicked["latitude"], clicked["longitude"])
+            location = Location(
+                name="Selected location",
+                latitude=clicked["latitude"],
+                longitude=clicked["longitude"],
+                timezone=tz
+            )
+            st.sidebar.success(f"✓ Location: {location.latitude:.4f}, {location.longitude:.4f}\nTimezone: {location.timezone}")
+        else:
+            # No location selected yet; show warning and stop
+            st.warning("👆 Click a location on the map to begin")
+            return
 
     # Header
     st.markdown(f"""
@@ -316,18 +451,18 @@ def main():
         <div style="font-size: 0.95rem; color: #a0aec0; margin-top: 0.5rem; font-style: italic;">Listening to the sky...</div>
     </div>
     """, unsafe_allow_html=True)
-    
+
     # Status indicator
     st.markdown('<div class="stars">✦ Night Signal online ✦</div>', unsafe_allow_html=True)
-    
+
     # Refresh button
     col1, col2, col3 = st.columns([1, 2, 1])
     with col2:
         if st.button("🔄 Refresh Signal", use_container_width=True):
             st.rerun()
-    
+
     st.divider()
-    
+
     try:
         with st.spinner("📡 Listening to the sky..."):
             targets = get_target_list(location)
@@ -351,13 +486,13 @@ def main():
             <p>Night Signal • Powered by Skyfield & Open-Meteo</p>
         </div>
         """, unsafe_allow_html=True)
-        
+
     except Exception as e:
         st.error(f"""
         ⚠️ **Transmission Error**
-        
+
         Could not retrieve signal data: {str(e)}
-        
+
         Please check your internet connection and try refreshing.
         """)
 
