@@ -172,6 +172,16 @@ def set_custom_theme():
     """, unsafe_allow_html=True)
 
 
+def celsius_to_fahrenheit(celsius):
+    """Convert a Celsius temperature to Fahrenheit for display."""
+    return (celsius * 9 / 5) + 32
+
+
+def km_to_miles(km):
+    """Convert kilometers to miles for display."""
+    return km * 0.621371
+
+
 def get_timezone_from_coordinates(latitude, longitude):
     """Resolve IANA timezone name from latitude/longitude coordinates.
 
@@ -348,7 +358,7 @@ def render_weather_section(conditions):
         st.markdown(f"""
         <div class="metric-card">
             <div style="font-size: 0.8rem; color: #a0aec0;">VISIBILITY</div>
-            <div style="font-size: 1.5rem; color: #60a5fa; font-weight: bold;">{conditions['visibility']:.1f} km</div>
+            <div style="font-size: 1.5rem; color: #60a5fa; font-weight: bold;">{km_to_miles(conditions['visibility']):.1f} mi</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -356,7 +366,7 @@ def render_weather_section(conditions):
         st.markdown(f"""
         <div class="metric-card">
             <div style="font-size: 0.8rem; color: #a0aec0;">TEMPERATURE</div>
-            <div style="font-size: 1.5rem; color: #f0abfc; font-weight: bold;">{conditions['temperature']:.1f}°C</div>
+            <div style="font-size: 1.5rem; color: #f0abfc; font-weight: bold;">{celsius_to_fahrenheit(conditions['temperature']):.1f}°F</div>
         </div>
         """, unsafe_allow_html=True)
 
@@ -421,7 +431,7 @@ def render_targets_section(targets, window):
         forecast = priority.get("forecast_conditions")
         forecast_line = (
             f"""<div style="font-size: 0.9rem; color: #a0aec0;">
-                Forecast near best time: {forecast['cloud_cover']:.0f}% clouds | {forecast['visibility']:.1f} km visibility | {forecast['temperature']:.1f}°C
+                Forecast near best time: {forecast['cloud_cover']:.0f}% clouds | {km_to_miles(forecast['visibility']):.1f} mi visibility | {celsius_to_fahrenheit(forecast['temperature']):.1f}°F
             </div>"""
             if forecast else ""
         )
@@ -453,7 +463,7 @@ def render_targets_section(targets, window):
         forecast = target.get("forecast_conditions")
         forecast_line = (
             f"""<div style="font-size: 0.85rem; color: #a0aec0;">
-                Forecast near best time: {forecast['cloud_cover']:.0f}% clouds | {forecast['visibility']:.1f} km visibility | {forecast['temperature']:.1f}°C
+                Forecast near best time: {forecast['cloud_cover']:.0f}% clouds | {km_to_miles(forecast['visibility']):.1f} mi visibility | {celsius_to_fahrenheit(forecast['temperature']):.1f}°F
             </div>"""
             if forecast else ""
         )
