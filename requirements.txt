@@ -1,1 +1,1 @@
-# Project dependencies (none required for initial setup)
+skyfield>=1.45
