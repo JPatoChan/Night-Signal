@@ -229,20 +229,20 @@ def render_targets_section(conditions, targets, window):
         st.warning("⚠️ No suspicious extraterrestrial activity detected. No planets are observable during tonight's dark window.")
         return
     
-    # Score all targets
-    scored_targets = []
-    for target in targets:
-        score = calculate_visibility_score(target, conditions)
-        scored_targets.append({
-            **target,
-            "visibility_score": score
-        })
-    
-    # Sort by score
-    scored_targets.sort(key=lambda x: x["visibility_score"], reverse=True)
-    
-    # Show priority target
-    if scored_targets:
+    if conditions is not None:
+        scored_targets = []
+        for target in targets:
+            score = calculate_visibility_score(target, conditions)
+            scored_targets.append({
+                **target,
+                "visibility_score": score
+            })
+        scored_targets.sort(key=lambda target: target["visibility_score"], reverse=True)
+    else:
+        scored_targets = targets
+
+    # Show priority target only when weather-dependent scores are available
+    if conditions is not None and scored_targets:
         priority = scored_targets[0]
         st.markdown(f"""
         <div class="priority-card">
@@ -262,7 +262,12 @@ def render_targets_section(conditions, targets, window):
     
     # Show all targets
     st.markdown("#### All Observable Targets")
-    for i, target in enumerate(scored_targets):
+    for target in scored_targets:
+        score_display = (
+            f"{target['visibility_score']}/100"
+            if conditions is not None
+            else "Visibility score unavailable"
+        )
         st.markdown(f"""
         <div class="target-item">
             <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -270,7 +275,7 @@ def render_targets_section(conditions, targets, window):
                     <span style="font-size: 1.1rem; color: #b4d7ff; font-weight: bold;">✦ {target['name']}</span>
                 </div>
                 <div style="text-align: right;">
-                    <span style="color: #4ade80; font-weight: bold; font-size: 1rem;">{target['visibility_score']}/100</span>
+                    <span style="color: #4ade80; font-weight: bold; font-size: 1rem;">{score_display}</span>
                 </div>
             </div>
             <div style="font-size: 0.85rem; color: #a0aec0; margin-top: 0.3rem;">
@@ -317,18 +322,21 @@ def main():
     st.divider()
     
     try:
-        # Fetch live data
         with st.spinner("📡 Listening to the sky..."):
-            conditions = get_observing_conditions()
             targets = get_target_list()
             window = get_observing_window()
-        
-        # Render sections
-        render_weather_section(conditions)
-        st.divider()
+
+        try:
+            conditions = get_observing_conditions()
+        except Exception as error:
+            conditions = None
+            st.warning(f"Weather signal unavailable. Astronomy data is still available. ({error})")
+
+        if conditions is not None:
+            render_weather_section(conditions)
+            st.divider()
         render_targets_section(conditions, targets, window)
-        
-        # Footer
+
         st.markdown("""
         ---
         <div style="text-align: center; font-size: 0.85rem; color: #7c8ba8;">

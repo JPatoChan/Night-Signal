@@ -1,6 +1,7 @@
 """Weather module for sky conditions monitoring."""
 
 import json
+import time
 import urllib.request
 import urllib.error
 
@@ -8,6 +9,10 @@ import urllib.error
 # Hard-coded location for forecast (Nashville, Tennessee)
 LATITUDE = 36.1627
 LONGITUDE = -86.7816
+
+
+class WeatherFetchError(Exception):
+    """Raised when Open-Meteo cannot provide current weather data."""
 
 
 def get_observing_conditions():
@@ -31,9 +36,17 @@ def get_observing_conditions():
         param_string = "&".join(f"{k}={v}" for k, v in params.items())
         url = f"https://api.open-meteo.com/v1/forecast?{param_string}"
         
-        # Make HTTP request
-        with urllib.request.urlopen(url, timeout=5) as response:
-            data = json.loads(response.read().decode())
+        for attempt in range(2):
+            try:
+                with urllib.request.urlopen(url, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                break
+            except (TimeoutError, urllib.error.URLError) as error:
+                if attempt == 1:
+                    raise WeatherFetchError(
+                        f"Failed to fetch weather data after 2 attempts: {error}"
+                    ) from error
+                time.sleep(1)
         
         # Extract current weather values
         current = data.get("current", {})
@@ -51,6 +64,8 @@ def get_observing_conditions():
             "temperature": temperature
         }
         
+    except WeatherFetchError:
+        raise
     except urllib.error.URLError as e:
         raise Exception(f"Failed to fetch weather data: Network error - {e}")
     except json.JSONDecodeError as e:
