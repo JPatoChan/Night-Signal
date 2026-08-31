@@ -16,7 +16,7 @@ logging.getLogger('geopy.geocoders').setLevel(logging.WARNING)
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from weather import get_observing_conditions
+from weather import get_observing_conditions, get_hourly_forecast, get_conditions_for_time
 from astronomy import get_target_list, get_observing_window
 from scoring import calculate_visibility_score
 from config import PRESET_LOCATIONS, DEFAULT_LOCATION, Location
@@ -381,8 +381,12 @@ def render_weather_section(conditions):
         """, unsafe_allow_html=True)
 
 
-def render_targets_section(conditions, targets, window):
-    """Render the targets section with priority target and list."""
+def render_targets_section(targets, window):
+    """Render the targets section with priority target and list.
+
+    Each target is expected to carry a "forecast_conditions" key (dict or
+    None) with the hourly forecast nearest to its own best viewing time.
+    """
     st.markdown("### 🛸 Transmission Targets")
 
     if window.get("evening_twilight_end") and window.get("morning_twilight_begin"):
@@ -397,21 +401,30 @@ def render_targets_section(conditions, targets, window):
         st.warning("⚠️ No suspicious extraterrestrial activity detected. No planets are observable during tonight's dark window.")
         return
 
-    if conditions is not None:
-        scored_targets = []
-        for target in targets:
-            score = calculate_visibility_score(target, conditions)
-            scored_targets.append({
-                **target,
-                "visibility_score": score
-            })
-        scored_targets.sort(key=lambda target: target["visibility_score"], reverse=True)
-    else:
-        scored_targets = targets
+    scored_targets = []
+    for target in targets:
+        forecast_conditions = target.get("forecast_conditions")
+        score = calculate_visibility_score(target, forecast_conditions) if forecast_conditions is not None else None
+        scored_targets.append({
+            **target,
+            "visibility_score": score
+        })
 
-    # Show priority target only when weather-dependent scores are available
-    if conditions is not None and scored_targets:
+    # Targets with a score sort to the top (highest first); unscored targets follow
+    scored_targets.sort(key=lambda target: (target["visibility_score"] is None, -(target["visibility_score"] or 0)))
+
+    have_any_score = any(target["visibility_score"] is not None for target in scored_targets)
+
+    # Show priority target only when its own forecast-based score is available
+    if have_any_score and scored_targets[0]["visibility_score"] is not None:
         priority = scored_targets[0]
+        forecast = priority.get("forecast_conditions")
+        forecast_line = (
+            f"""<div style="font-size: 0.9rem; color: #a0aec0;">
+                Forecast near best time: {forecast['cloud_cover']:.0f}% clouds | {forecast['visibility']:.1f} km visibility | {forecast['temperature']:.1f}°C
+            </div>"""
+            if forecast else ""
+        )
         st.markdown(f"""
         <div class="priority-card">
             <div style="font-size: 0.9rem; color: #a78bfa; text-transform: uppercase; letter-spacing: 2px;">📡 Priority Transmission</div>
@@ -425,6 +438,7 @@ def render_targets_section(conditions, targets, window):
             <div style="font-size: 0.9rem; color: #a0aec0;">
                 Observable for: {priority['observable_duration_hours']} hrs | Magnitude: {priority['apparent_magnitude']}
             </div>
+            {forecast_line}
         </div>
         """, unsafe_allow_html=True)
 
@@ -433,8 +447,15 @@ def render_targets_section(conditions, targets, window):
     for target in scored_targets:
         score_display = (
             f"{target['visibility_score']}/100"
-            if conditions is not None
+            if target["visibility_score"] is not None
             else "Visibility score unavailable"
+        )
+        forecast = target.get("forecast_conditions")
+        forecast_line = (
+            f"""<div style="font-size: 0.85rem; color: #a0aec0;">
+                Forecast near best time: {forecast['cloud_cover']:.0f}% clouds | {forecast['visibility']:.1f} km visibility | {forecast['temperature']:.1f}°C
+            </div>"""
+            if forecast else ""
         )
         st.markdown(f"""
         <div class="target-item">
@@ -452,6 +473,7 @@ def render_targets_section(conditions, targets, window):
             <div style="font-size: 0.85rem; color: #a0aec0;">
                 Observable for: {target['observable_duration_hours']} hrs | Magnitude: {target['apparent_magnitude']}
             </div>
+            {forecast_line}
         </div>
         """, unsafe_allow_html=True)
 
@@ -554,10 +576,25 @@ def main():
             conditions = None
             st.warning(f"Weather signal unavailable. Astronomy data is still available. ({error})")
 
+        # Fetch the hourly forecast once and match each target to the nearest
+        # hour around its own best viewing time, rather than scoring every
+        # target with a single current-conditions snapshot
+        try:
+            hourly_forecast = get_hourly_forecast(location)
+        except Exception:
+            hourly_forecast = None
+
+        for target in targets:
+            target["forecast_conditions"] = (
+                get_conditions_for_time(location, target.get("best_viewing_time_utc"), forecast=hourly_forecast)
+                if hourly_forecast is not None
+                else None
+            )
+
         if conditions is not None:
             render_weather_section(conditions)
             st.divider()
-        render_targets_section(conditions, targets, window)
+        render_targets_section(targets, window)
 
         st.markdown("""
         ---

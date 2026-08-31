@@ -173,6 +173,7 @@ def get_target_list(location):
                 max_index = int(np.argmax(altitude_degrees))
                 max_altitude = float(altitude_degrees[max_index])
                 best_viewing_time = _format_local_time(sample_times[max_index], timezone)
+                best_viewing_time_utc = sample_times[max_index].utc_datetime()
 
                 above_indices = np.where(above_horizon)[0]
                 first_index, last_index = above_indices[0], above_indices[-1]
@@ -184,6 +185,7 @@ def get_target_list(location):
                     "name": DISPLAY_NAMES[planet_id],
                     "max_altitude": round(max_altitude, 2),
                     "best_viewing_time": best_viewing_time,
+                    "best_viewing_time_utc": best_viewing_time_utc,
                     "observable_duration_hours": round(observable_duration_hours, 2),
                     "apparent_magnitude": APPROXIMATE_MAGNITUDES[planet_id]
                 })
