@@ -5,10 +5,12 @@ import time
 import urllib.request
 import urllib.error
 
+from config import LOCATION
 
-# Hard-coded location for forecast (Nashville, Tennessee)
-LATITUDE = 36.1627
-LONGITUDE = -86.7816
+
+# Shared location for forecast
+LATITUDE = LOCATION.latitude
+LONGITUDE = LOCATION.longitude
 
 
 class WeatherFetchError(Exception):

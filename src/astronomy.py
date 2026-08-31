@@ -5,12 +5,14 @@ from zoneinfo import ZoneInfo
 from skyfield.api import Topos, load
 from skyfield import almanac
 
+from config import LOCATION
 
-# Nashville, Tennessee observer location
-NASHVILLE = Topos(latitude_degrees=36.1627, longitude_degrees=-86.7816)
 
-# Real IANA timezone for Nashville display times (handles DST correctly)
-NASHVILLE_TZ = ZoneInfo("America/Chicago")
+# Configured observer location
+OBSERVER_LOCATION = Topos(latitude_degrees=LOCATION.latitude, longitude_degrees=LOCATION.longitude)
+
+# Configured local timezone for display times (handles DST correctly)
+LOCAL_TIMEZONE = ZoneInfo(LOCATION.timezone)
 
 # Planet identifiers in Skyfield ephemeris
 PLANET_NAMES = ["mercury barycenter", "venus barycenter", "mars barycenter", 
@@ -54,8 +56,8 @@ def _get_ephemeris_and_timescale():
 
 
 def _format_local_time(t):
-    """Format a Skyfield Time as a real Nashville local time string."""
-    local_dt = t.utc_datetime().astimezone(NASHVILLE_TZ)
+    """Format a Skyfield Time as a local time string in the configured timezone."""
+    local_dt = t.utc_datetime().astimezone(LOCAL_TIMEZONE)
     return local_dt.strftime("%I:%M %p %Z").lstrip("0")
 
 
@@ -77,7 +79,7 @@ def _find_tonights_window(ephemeris, ts):
     t0 = ts.tt_jd(now.tt - 1)
     t1 = ts.tt_jd(now.tt + 1)
 
-    twilight_function = almanac.dark_twilight_day(ephemeris, NASHVILLE)
+    twilight_function = almanac.dark_twilight_day(ephemeris, OBSERVER_LOCATION)
     times, values = almanac.find_discrete(t0, t1, twilight_function)
     transitions = list(zip(times, values))
 
@@ -123,8 +125,8 @@ def get_target_list():
     """Calculate planets worth observing during tonight's full dark window.
 
     Uses Skyfield to find the dark astronomical observing window for
-    Nashville (evening astronomical twilight end through morning
-    astronomical twilight begin), then scans that window for each
+    the configured observer location (evening astronomical twilight end
+    through morning astronomical twilight begin), then scans that window for each
     planet's peak altitude, best viewing time, and observable duration.
     Only planets that rise above the horizon at some point during the
     window are returned.
@@ -140,7 +142,7 @@ def get_target_list():
     try:
         ephemeris, ts = _get_ephemeris_and_timescale()
         earth = ephemeris["earth"]
-        observer = earth + NASHVILLE
+        observer = earth + OBSERVER_LOCATION
 
         _, window_start, window_end = _find_tonights_window(ephemeris, ts)
         if window_start is None or window_end is None:

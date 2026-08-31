@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 from weather import get_observing_conditions
 from astronomy import get_target_list, get_observing_window
 from scoring import calculate_visibility_score
+from config import LOCATION
 
 
 # Custom CSS for dark space theme
@@ -302,10 +303,10 @@ def main():
     set_custom_theme()
     
     # Header
-    st.markdown("""
+    st.markdown(f"""
     <div style="text-align: center; margin-bottom: 2rem;">
         <div style="font-size: 3rem; margin-bottom: 0.5rem;">🌌 Night Signal</div>
-        <div style="font-size: 1.2rem; color: #60a5fa;">Nashville, Tennessee</div>
+        <div style="font-size: 1.2rem; color: #60a5fa;">{LOCATION.name}</div>
         <div style="font-size: 0.95rem; color: #a0aec0; margin-top: 0.5rem; font-style: italic;">Listening to the sky...</div>
     </div>
     """, unsafe_allow_html=True)
