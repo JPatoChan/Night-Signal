@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from weather import get_observing_conditions
-from astronomy import get_target_list
+from astronomy import get_target_list, get_observing_window
 from scoring import calculate_visibility_score
 
 
@@ -213,12 +213,20 @@ def render_weather_section(conditions):
         """, unsafe_allow_html=True)
 
 
-def render_targets_section(conditions, targets):
+def render_targets_section(conditions, targets, window):
     """Render the targets section with priority target and list."""
     st.markdown("### 🛸 Transmission Targets")
     
+    if window.get("evening_twilight_end") and window.get("morning_twilight_begin"):
+        sunset_line = f"Sunset: <span style=\"color: #b4d7ff;\">{window['sunset']}</span> | " if window.get("sunset") else ""
+        st.markdown(f"""
+        <div style="font-size: 0.9rem; color: #a0aec0; margin-bottom: 1rem;">
+            {sunset_line}Dark observing window: <span style="color: #b4d7ff;">{window['evening_twilight_end']}</span> → <span style="color: #b4d7ff;">{window['morning_twilight_begin']}</span>
+        </div>
+        """, unsafe_allow_html=True)
+
     if not targets:
-        st.warning("⚠️ No suspicious extraterrestrial activity detected. All planets are below the horizon.")
+        st.warning("⚠️ No suspicious extraterrestrial activity detected. No planets are observable during tonight's dark window.")
         return
     
     # Score all targets
@@ -244,7 +252,10 @@ def render_targets_section(conditions, targets):
                 Visibility: <span style="color: #4ade80; font-weight: bold;">{priority['visibility_score']}/100</span>
             </div>
             <div style="font-size: 0.9rem; color: #a0aec0; margin-top: 0.5rem;">
-                Altitude: {priority['altitude']}° | Magnitude: {priority['apparent_magnitude']}
+                Best viewing time: {priority['best_viewing_time']} | Max altitude: {priority['max_altitude']}°
+            </div>
+            <div style="font-size: 0.9rem; color: #a0aec0;">
+                Observable for: {priority['observable_duration_hours']} hrs | Magnitude: {priority['apparent_magnitude']}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -263,7 +274,10 @@ def render_targets_section(conditions, targets):
                 </div>
             </div>
             <div style="font-size: 0.85rem; color: #a0aec0; margin-top: 0.3rem;">
-                Altitude: {target['altitude']}° | Magnitude: {target['apparent_magnitude']}
+                Best viewing time: {target['best_viewing_time']} | Max altitude: {target['max_altitude']}°
+            </div>
+            <div style="font-size: 0.85rem; color: #a0aec0;">
+                Observable for: {target['observable_duration_hours']} hrs | Magnitude: {target['apparent_magnitude']}
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -271,9 +285,6 @@ def render_targets_section(conditions, targets):
 
 def main():
     """Main dashboard application."""
-    # Set custom theme
-    set_custom_theme()
-    
     # Page config
     st.set_page_config(
         page_title="Night Signal",
@@ -281,6 +292,9 @@ def main():
         layout="wide",
         initial_sidebar_state="collapsed"
     )
+
+    # Set custom theme
+    set_custom_theme()
     
     # Header
     st.markdown("""
@@ -307,11 +321,12 @@ def main():
         with st.spinner("📡 Listening to the sky..."):
             conditions = get_observing_conditions()
             targets = get_target_list()
+            window = get_observing_window()
         
         # Render sections
         render_weather_section(conditions)
         st.divider()
-        render_targets_section(conditions, targets)
+        render_targets_section(conditions, targets, window)
         
         # Footer
         st.markdown("""

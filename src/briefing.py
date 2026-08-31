@@ -21,14 +21,17 @@ def generate_report(conditions, targets):
         condition_quality = "Good"
     else:
         condition_quality = "Poor"
-    
+
     # Score all targets
     scored_targets = []
     for target in targets:
         score = calculate_visibility_score(target, conditions)
         scored_targets.append({
             "name": target["name"],
-            "score": score
+            "score": score,
+            "best_viewing_time": target.get("best_viewing_time"),
+            "max_altitude": target.get("max_altitude"),
+            "observable_duration_hours": target.get("observable_duration_hours")
         })
     
     # Sort by score descending
@@ -37,14 +40,24 @@ def generate_report(conditions, targets):
     # Build report
     report = f"\nTonight's conditions: {condition_quality}\n\n"
     
-    if scored_targets:
-        priority = scored_targets[0]
-        report += f"Priority target: {priority['name']}\n"
-        report += f"Visibility score: {priority['score']}/100\n"
+    if not scored_targets:
+        report += "No suspicious extraterrestrial activity detected.\n"
+        report += "No planets are observable during tonight's dark window.\n"
+        return report
+
+    priority = scored_targets[0]
+    report += f"Priority target: {priority['name']}\n"
+    report += f"Visibility score: {priority['score']}/100\n"
+    report += f"Best viewing time: {priority['best_viewing_time']}\n"
+    report += f"Max altitude: {priority['max_altitude']}°\n"
+    report += f"Observable duration: {priority['observable_duration_hours']} hours\n"
     
     if len(scored_targets) > 1:
         secondary = scored_targets[1]
         report += f"\nSecondary target: {secondary['name']}\n"
         report += f"Visibility score: {secondary['score']}/100\n"
+        report += f"Best viewing time: {secondary['best_viewing_time']}\n"
+        report += f"Max altitude: {secondary['max_altitude']}°\n"
+        report += f"Observable duration: {secondary['observable_duration_hours']} hours\n"
     
     return report
