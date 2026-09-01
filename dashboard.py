@@ -301,6 +301,204 @@ def get_location_name_from_coordinates(latitude, longitude):
         return f"Selected location ({latitude:.4f}, {longitude:.4f})"
 
 
+def get_location_search_results(query):
+    """Forward geocode a free-form search query into candidate locations.
+
+    Uses the same OpenStreetMap Nominatim service as reverse geocoding to
+    resolve a city/state, place name, address, or ZIP/postal code into one
+    or more candidate matches, rather than silently picking just one.
+
+    Args:
+        query (str): Free-form search text.
+
+    Returns:
+        list: Dicts with "display_name", "latitude", "longitude" for each
+        match (empty if nothing matched), or None if the geocoding request
+        itself failed (network error, timeout, etc).
+    """
+    try:
+        geolocator = Nominatim(user_agent="night-signal-observatory")
+        results = geolocator.geocode(query, exactly_one=False, limit=5, timeout=5)
+
+        if not results:
+            return []
+
+        return [
+            {
+                "display_name": result.address,
+                "latitude": result.latitude,
+                "longitude": result.longitude
+            }
+            for result in results
+            if result is not None and result.latitude is not None and result.longitude is not None
+        ]
+
+    except Exception:
+        return None
+
+
+def render_location_search():
+    """Render the sidebar Search location control.
+
+    Returns:
+        Location: The currently selected search result, or None if no
+        result has been chosen yet.
+    """
+    query = st.text_input("Search for a city, address, or ZIP code:", key="location_search_query")
+
+    if st.button("🔍 Search", key="location_search_button"):
+        stripped_query = query.strip()
+        if stripped_query:
+            # Only geocode on the rerun triggered by this button press, not
+            # on every subsequent rerun (e.g. selecting a result)
+            st.session_state.search_query = stripped_query
+            st.session_state.search_results = get_location_search_results(stripped_query)
+        # Empty input: do nothing, per spec -- leave prior state untouched
+
+    results = st.session_state.get("search_results")
+
+    if results is None:
+        if st.session_state.get("search_query"):
+            st.warning("Search is temporarily unavailable. Please try again.")
+    elif results == []:
+        st.info("No matching locations found. Try a different search.")
+    else:
+        display_names = [result["display_name"] for result in results]
+        selected_display = st.selectbox("Matching locations:", display_names, key="location_search_selectbox")
+        selected_result = results[display_names.index(selected_display)]
+
+        if st.button("Use this location", key="location_search_confirm"):
+            timezone = get_timezone_from_coordinates(selected_result["latitude"], selected_result["longitude"])
+            st.session_state.search_selected_location = {
+                "name": selected_result["display_name"],
+                "latitude": selected_result["latitude"],
+                "longitude": selected_result["longitude"],
+                "timezone": timezone
+            }
+
+    selected = st.session_state.get("search_selected_location")
+    if selected:
+        st.success(f"✓ {selected['name']}")
+        return Location(
+            name=selected["name"],
+            latitude=selected["latitude"],
+            longitude=selected["longitude"],
+            timezone=selected["timezone"]
+        )
+
+    return None
+
+
+def add_saved_location(saved_locations, location):
+    """Add a location to the saved-locations list if not already present.
+
+    Duplicate prevention is based on latitude/longitude rather than name,
+    since the same coordinates can arrive with slightly different display
+    names depending on which mode (preset/search/map) produced them.
+
+    Args:
+        saved_locations (list): Current list of saved-location dicts.
+        location (Location): The location to save.
+
+    Returns:
+        tuple: (updated_list, was_added). was_added is False if a saved
+        entry already exists at this location's coordinates.
+    """
+    for saved in saved_locations:
+        if saved["latitude"] == location.latitude and saved["longitude"] == location.longitude:
+            return saved_locations, False
+
+    updated = saved_locations + [{
+        "name": location.name,
+        "latitude": location.latitude,
+        "longitude": location.longitude,
+        "timezone": location.timezone
+    }]
+    return updated, True
+
+
+def remove_saved_location(saved_locations, latitude, longitude):
+    """Remove the saved location matching the given coordinates, if any.
+
+    Args:
+        saved_locations (list): Current list of saved-location dicts.
+        latitude (float): Latitude of the entry to remove.
+        longitude (float): Longitude of the entry to remove.
+
+    Returns:
+        list: Updated list with the matching entry removed.
+    """
+    return [
+        saved for saved in saved_locations
+        if not (saved["latitude"] == latitude and saved["longitude"] == longitude)
+    ]
+
+
+def clear_active_saved_location_if_matching(active, latitude, longitude):
+    """Return None if `active` matches the given coordinates, else `active`.
+
+    Used so deleting the currently active saved location clears the
+    active selection instead of leaving a dangling reference to a saved
+    entry that no longer exists.
+    """
+    if active and active["latitude"] == latitude and active["longitude"] == longitude:
+        return None
+    return active
+
+
+def location_from_saved(saved):
+    """Reconstruct a Location object from a saved-location dict.
+
+    Args:
+        saved (dict): Dict with name, latitude, longitude, timezone.
+
+    Returns:
+        Location: The reconstructed Location object. Requires no new
+        geocoding call, since coordinates and timezone are already stored.
+    """
+    return Location(
+        name=saved["name"],
+        latitude=saved["latitude"],
+        longitude=saved["longitude"],
+        timezone=saved["timezone"]
+    )
+
+
+def render_saved_locations_selector():
+    """Render the sidebar Saved Locations control.
+
+    Returns:
+        Location: The currently active saved location, or None if none
+        is selected yet.
+    """
+    saved_locations = st.session_state.get("saved_locations", [])
+
+    if not saved_locations:
+        st.info("No saved locations yet. Save a location first, then it will appear here.")
+        return None
+
+    for index, saved in enumerate(saved_locations):
+        col_activate, col_remove = st.columns([4, 1])
+        with col_activate:
+            if st.button(saved["name"], key=f"activate_saved_{index}", use_container_width=True):
+                st.session_state.active_saved_location = saved
+        with col_remove:
+            if st.button("🗑️", key=f"remove_saved_{index}"):
+                st.session_state.saved_locations = remove_saved_location(
+                    st.session_state.saved_locations, saved["latitude"], saved["longitude"]
+                )
+                st.session_state.active_saved_location = clear_active_saved_location_if_matching(
+                    st.session_state.get("active_saved_location"), saved["latitude"], saved["longitude"]
+                )
+
+    active = st.session_state.get("active_saved_location")
+    if active:
+        st.success(f"✓ {active['name']}")
+        return location_from_saved(active)
+
+    return None
+
+
 def render_map_picker():
     """Render an interactive map for location selection.
 
@@ -692,6 +890,20 @@ def main():
     if "clicked_location_name_coords" not in st.session_state:
         st.session_state.clicked_location_name_coords = None
 
+    # Initialize session state for typed location search
+    if "search_query" not in st.session_state:
+        st.session_state.search_query = None
+    if "search_results" not in st.session_state:
+        st.session_state.search_results = None
+    if "search_selected_location" not in st.session_state:
+        st.session_state.search_selected_location = None
+
+    # Initialize session state for saved locations
+    if "saved_locations" not in st.session_state:
+        st.session_state.saved_locations = []
+    if "active_saved_location" not in st.session_state:
+        st.session_state.active_saved_location = None
+
     # Set custom theme
     set_custom_theme()
 
@@ -701,7 +913,7 @@ def main():
 
         location_source = st.radio(
             "Choose location:",
-            ["Preset", "Click Map"],
+            ["Preset", "Search", "Click Map", "Saved"],
             horizontal=False
         )
 
@@ -710,11 +922,27 @@ def main():
             default_index = PRESET_LOCATIONS.index(DEFAULT_LOCATION)
             selected_name = st.selectbox("Select preset:", location_names, index=default_index)
             location = PRESET_LOCATIONS[location_names.index(selected_name)]
-            # Clear any prior map click when switching to preset
+            # Clear any state from the other location modes when switching to preset
             st.session_state.clicked_location = None
+            st.session_state.search_selected_location = None
+            st.session_state.active_saved_location = None
+        elif location_source == "Search":
+            location = render_location_search()
+            # Clear any prior state from the other location modes
+            st.session_state.clicked_location = None
+            st.session_state.active_saved_location = None
+        elif location_source == "Saved":
+            st.markdown("### 💾 Saved Locations")
+            location = render_saved_locations_selector()
+            # Clear any prior state from the other location modes
+            st.session_state.clicked_location = None
+            st.session_state.search_selected_location = None
         else:
             st.markdown("**Using map below — click to select a location**")
             location = None  # Will be set after map interaction
+            # Clear any prior state from the other location modes
+            st.session_state.search_selected_location = None
+            st.session_state.active_saved_location = None
 
     # Render map in main area
     if location_source == "Click Map":
@@ -740,6 +968,22 @@ def main():
             # No location selected yet; show warning and stop
             st.warning("👆 Click a location on the map to begin")
             return
+    elif location_source == "Search" and location is None:
+        # No search result selected yet; show warning and stop
+        st.warning("🔍 Search for a location in the sidebar and select a result to begin")
+        return
+    elif location_source == "Saved" and location is None:
+        # No saved location selected yet; show warning and stop
+        st.warning("💾 Save a location first, or select one from the sidebar to begin")
+        return
+
+    # Save-location control for whichever location is currently active
+    if st.sidebar.button("⭐ Save this location", key="save_location_button"):
+        st.session_state.saved_locations, was_added = add_saved_location(st.session_state.saved_locations, location)
+        if was_added:
+            st.sidebar.success(f"✓ Saved '{location.name}'")
+        else:
+            st.sidebar.info(f"'{location.name}' is already saved.")
 
     # Meteor Signal sidebar panel, directly below the location controls
     try:
