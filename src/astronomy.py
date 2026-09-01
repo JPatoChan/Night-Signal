@@ -198,3 +198,177 @@ def get_target_list(location):
 
     except Exception as e:
         raise Exception(f"Failed to calculate planetary positions: {e}")
+
+
+def _classify_moon_phase(phase_angle_degrees):
+    """Classify a lunar elongation angle (0-360 degrees) into a named phase."""
+    angle = phase_angle_degrees % 360
+    if angle < 11.25 or angle >= 348.75:
+        return "New Moon"
+    if angle < 78.75:
+        return "Waxing Crescent"
+    if angle < 101.25:
+        return "First Quarter"
+    if angle < 168.75:
+        return "Waxing Gibbous"
+    if angle < 191.25:
+        return "Full Moon"
+    if angle < 258.75:
+        return "Waning Gibbous"
+    if angle < 281.25:
+        return "Last Quarter"
+    return "Waning Crescent"
+
+
+def _first_time_at_or_after(times, reference):
+    """Return the first Skyfield Time in `times` at or after `reference`, or None."""
+    for t in sorted(times, key=lambda t: t.tt):
+        if t.tt >= reference.tt:
+            return t
+    return None
+
+
+def _filter_valid_events(times, event_flags):
+    """Keep only event times whose Skyfield event flag is True.
+
+    find_risings()/find_settings() can report a candidate time that isn't
+    actually a genuine rise/set (event_flags entry False), which should
+    never be treated as a real moonrise/moonset.
+    """
+    return [t for t, is_valid in zip(times, event_flags) if is_valid]
+
+
+def _select_moonrise_moonset(rise_times, set_times, window_start, window_end, moon_already_up):
+    """Pick the moonrise/moonset relevant to a specific observing window.
+
+    Rather than simply returning the next rise/set after the current clock
+    time (which can surface tomorrow's moonrise while describing tonight's
+    window), this associates events with the window itself: if the moon is
+    already up when the window begins, the rise that brought it up is used
+    (searching backward, never forward into a future night); otherwise only
+    a rise that actually falls within the window counts.
+
+    Args:
+        rise_times (list): Candidate moonrise Time objects (any order/span).
+        set_times (list): Candidate moonset Time objects (any order/span).
+        window_start (Time): Start of the dark observing window.
+        window_end (Time): End of the dark observing window.
+        moon_already_up (bool): Whether the moon is above the horizon at
+            window_start.
+
+    Returns:
+        tuple: (moonrise_time, moonset_time), either of which may be None.
+    """
+    if moon_already_up:
+        moonrise_time = None
+        for t in sorted(rise_times, key=lambda t: t.tt, reverse=True):
+            if t.tt <= window_start.tt:
+                moonrise_time = t
+                break
+        moonset_time = _first_time_at_or_after(set_times, window_start)
+        return moonrise_time, moonset_time
+
+    moonrise_time = None
+    for t in sorted(rise_times, key=lambda t: t.tt):
+        if window_start.tt <= t.tt <= window_end.tt:
+            moonrise_time = t
+            break
+
+    if moonrise_time is None:
+        return None, None
+
+    moonset_time = _first_time_at_or_after(set_times, moonrise_time)
+    return moonrise_time, moonset_time
+
+
+def get_lunar_data(location):
+    """Calculate tonight's lunar phase, illumination, and visibility details.
+
+    Args:
+        location (Location): Observer location to calculate lunar data for.
+
+    Returns:
+        dict: Contains phase_name, illumination_percent, is_waxing,
+        moonrise, moonset (formatted local time strings or None),
+        above_horizon_during_window (bool), best_viewing_time (str or
+        None), and max_altitude (degrees or None).
+    """
+    try:
+        ephemeris, ts = _get_ephemeris_and_timescale()
+        earth = ephemeris["earth"]
+        moon = ephemeris["moon"]
+        observer_topos = Topos(latitude_degrees=location.latitude, longitude_degrees=location.longitude)
+        observer = earth + observer_topos
+        timezone = ZoneInfo(location.timezone)
+        now = ts.now()
+
+        _, window_start, window_end = _find_tonights_window(ephemeris, ts, observer_topos)
+
+        # Phase/illumination are slow-changing, so tonight's window start (or
+        # now, if no window was found) is a fine reference moment for them
+        reference_time = window_start if window_start is not None else now
+        phase_angle_degrees = almanac.moon_phase(ephemeris, reference_time).degrees
+        illumination_fraction = almanac.fraction_illuminated(ephemeris, "moon", reference_time)
+
+        if window_start is not None and window_end is not None:
+            # Search a span padded a day on each side so a rise shortly
+            # before the window, or a set shortly after it, is still found
+            search_start = ts.tt_jd(window_start.tt - 1)
+            search_end = ts.tt_jd(window_end.tt + 1)
+            rise_times, rise_flags = almanac.find_risings(observer, moon, search_start, search_end)
+            set_times, set_flags = almanac.find_settings(observer, moon, search_start, search_end)
+            rise_times = _filter_valid_events(rise_times, rise_flags)
+            set_times = _filter_valid_events(set_times, set_flags)
+
+            altitude_at_window_start = observer.at(window_start).observe(moon).apparent().altaz()[0].degrees
+            moon_already_up = bool(altitude_at_window_start > 0)
+
+            moonrise_time, moonset_time = _select_moonrise_moonset(
+                rise_times, set_times, window_start, window_end, moon_already_up
+            )
+        else:
+            # No dark window determined; fall back to the next events after now
+            t0 = ts.tt_jd(now.tt - 1)
+            t1 = ts.tt_jd(now.tt + 1)
+            rise_times, rise_flags = almanac.find_risings(observer, moon, t0, t1)
+            set_times, set_flags = almanac.find_settings(observer, moon, t0, t1)
+            rise_times = _filter_valid_events(rise_times, rise_flags)
+            set_times = _filter_valid_events(set_times, set_flags)
+            moonrise_time = _first_time_at_or_after(rise_times, now)
+            moonset_time = _first_time_at_or_after(set_times, now)
+
+        above_horizon_during_window = False
+        best_viewing_time = None
+        max_altitude = None
+
+        if window_start is not None and window_end is not None:
+            window_hours = (window_end.tt - window_start.tt) * 24
+            sample_count = max(2, int((window_hours * 60) / SAMPLE_INTERVAL_MINUTES) + 1)
+            sample_tt = np.linspace(window_start.tt, window_end.tt, sample_count)
+            sample_times = ts.tt_jd(sample_tt)
+
+            apparent = observer.at(sample_times).observe(moon).apparent()
+            alt, az, distance = apparent.altaz()
+            altitude_degrees = alt.degrees
+
+            above_horizon = altitude_degrees > 0
+            above_horizon_during_window = bool(above_horizon.any())
+
+            if above_horizon_during_window:
+                max_index = int(np.argmax(altitude_degrees))
+                max_altitude = round(float(altitude_degrees[max_index]), 2)
+                best_viewing_time = _format_local_time(sample_times[max_index], timezone)
+
+        return {
+            "phase_name": _classify_moon_phase(phase_angle_degrees),
+            "illumination_percent": round(float(illumination_fraction) * 100, 1),
+            "is_waxing": bool(phase_angle_degrees % 360 < 180),
+            "moonrise": _format_local_time(moonrise_time, timezone) if moonrise_time is not None else None,
+            "moonset": _format_local_time(moonset_time, timezone) if moonset_time is not None else None,
+            "above_horizon_during_window": above_horizon_during_window,
+            "best_viewing_time": best_viewing_time,
+            "max_altitude": max_altitude
+        }
+
+    except Exception as e:
+        raise Exception(f"Failed to calculate lunar data: {e}")

@@ -17,7 +17,7 @@ logging.getLogger('geopy.geocoders').setLevel(logging.WARNING)
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 from weather import get_observing_conditions, get_hourly_forecast, get_conditions_for_time
-from astronomy import get_target_list, get_observing_window
+from astronomy import get_target_list, get_observing_window, get_lunar_data
 from scoring import calculate_visibility_score
 from config import PRESET_LOCATIONS, DEFAULT_LOCATION, Location
 
@@ -129,6 +129,18 @@ def set_custom_theme():
         border-radius: 4px;
         padding: 1rem;
         margin: 0.5rem 0;
+        font-family: 'Montserrat', sans-serif;
+    }
+
+    /* Lunar Signal panel - soft silver/blue glow */
+    .lunar-card {
+        background: linear-gradient(135deg, rgba(180, 215, 255, 0.12) 0%, rgba(99, 102, 241, 0.08) 100%);
+        border: 1px solid rgba(180, 215, 255, 0.3);
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        box-shadow: 0 0 25px rgba(180, 215, 255, 0.15);
+        backdrop-filter: blur(10px);
         font-family: 'Montserrat', sans-serif;
     }
 
@@ -338,6 +350,88 @@ def handle_map_click(map_data):
         )
 
     return None
+
+
+def render_moon_svg(illumination_percent, is_waxing, size=140):
+    """Render an inline SVG illustration of the moon for the current phase.
+
+    Uses two overlapping arcs to trace the illuminated region: an outer
+    semicircle (illuminated limb, right side if waxing, left if waning)
+    joined to an inner elliptical terminator arc whose horizontal radius
+    is proportional to illumination. This needs no external image or API.
+
+    Args:
+        illumination_percent (float): Illuminated fraction, 0-100.
+        is_waxing (bool): True if the moon is waxing (illuminated on the
+            right, Northern Hemisphere convention), False if waning.
+        size (int): Width/height of the rendered SVG in pixels.
+
+    Returns:
+        str: Inline SVG markup.
+    """
+    r = size / 2 - 6
+    cx = cy = size / 2
+    k = max(0.0, min(1.0, illumination_percent / 100))
+
+    outer_sweep = 1 if is_waxing else 0
+    inner_sweep = outer_sweep if k >= 0.5 else (1 - outer_sweep)
+    rx = r * abs(1 - 2 * k)
+
+    illuminated_path = (
+        f"M {cx} {cy - r} "
+        f"A {r} {r} 0 0 {outer_sweep} {cx} {cy + r} "
+        f"A {rx} {r} 0 0 {inner_sweep} {cx} {cy - r} "
+        f"Z"
+    )
+
+    return f"""
+    <svg width="{size}" height="{size}" viewBox="0 0 {size} {size}" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+            <filter id="moon-glow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="5" result="blur"/>
+                <feMerge>
+                    <feMergeNode in="blur"/>
+                    <feMergeNode in="SourceGraphic"/>
+                </feMerge>
+            </filter>
+        </defs>
+        <circle cx="{cx}" cy="{cy}" r="{r}" fill="#161b33" stroke="rgba(180, 215, 255, 0.25)" stroke-width="1.5"/>
+        <path d="{illuminated_path}" fill="#e4ecff" filter="url(#moon-glow)"/>
+        <circle cx="{cx}" cy="{cy}" r="{r}" fill="none" stroke="rgba(180, 215, 255, 0.35)" stroke-width="1.5"/>
+    </svg>
+    """
+
+
+def render_lunar_section(lunar):
+    """Render the Lunar Signal section with phase details and a moon graphic."""
+    st.markdown("### 🌙 Lunar Signal")
+
+    moon_svg = render_moon_svg(lunar["illumination_percent"], lunar["is_waxing"])
+
+    if lunar["best_viewing_time"]:
+        visibility_line = f"Best viewing time: {lunar['best_viewing_time']} | Max altitude: {lunar['max_altitude']}°"
+    elif lunar["above_horizon_during_window"]:
+        visibility_line = "Above horizon during tonight's dark window"
+    else:
+        visibility_line = "Below horizon during tonight's dark window"
+
+    st.markdown(f"""
+    <div class="lunar-card">
+        <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;">
+            <div>{moon_svg}</div>
+            <div style="flex: 1; min-width: 200px;">
+                <div style="font-size: 1.4rem; color: #e4ecff; font-weight: bold;">{lunar['phase_name']}</div>
+                <div style="font-size: 1rem; color: #b4d7ff; margin: 0.3rem 0;">
+                    Illumination: <span style="font-weight: bold;">{lunar['illumination_percent']:.1f}%</span>
+                </div>
+                <div style="font-size: 0.9rem; color: #a0aec0;">
+                    Moonrise: {lunar['moonrise'] or 'Unknown'} | Moonset: {lunar['moonset'] or 'Unknown'}
+                </div>
+                <div style="font-size: 0.9rem; color: #a0aec0; margin-top: 0.3rem;">{visibility_line}</div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def render_weather_section(conditions):
@@ -581,6 +675,11 @@ def main():
             window = get_observing_window(location)
 
         try:
+            lunar = get_lunar_data(location)
+        except Exception:
+            lunar = None
+
+        try:
             conditions = get_observing_conditions(location)
         except Exception as error:
             conditions = None
@@ -603,6 +702,9 @@ def main():
 
         if conditions is not None:
             render_weather_section(conditions)
+            st.divider()
+        if lunar is not None:
+            render_lunar_section(lunar)
             st.divider()
         render_targets_section(targets, window)
 
