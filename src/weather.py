@@ -5,10 +5,17 @@ import time
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 
 class WeatherFetchError(Exception):
     """Raised when Open-Meteo cannot provide current weather data."""
+
+
+# Open-Meteo's hourly forecast endpoint supports up to 16 forecast_days.
+# Dates further out (or in the past) aren't forecastable, and this module
+# never fabricates weather for them.
+MAX_FORECAST_DAYS = 16
 
 
 def get_observing_conditions(location):
@@ -75,11 +82,14 @@ def get_observing_conditions(location):
         raise Exception(f"Unexpected error fetching weather: {e}")
 
 
-def get_hourly_forecast(location):
+def get_hourly_forecast(location, forecast_days=2):
     """Fetch hourly forecast data from Open-Meteo for the given location.
 
     Args:
         location (Location): Observer location to fetch forecast for.
+        forecast_days (int): How many days of hourly forecast to request
+            (Open-Meteo supports 1-16). Defaults to 2, which is enough to
+            cover tonight's observing window crossing into tomorrow.
 
     Returns:
         dict: Contains "times" (list of timezone-aware UTC datetimes),
@@ -96,7 +106,7 @@ def get_hourly_forecast(location):
             "longitude": location.longitude,
             "hourly": "cloud_cover,visibility,temperature_2m",
             "timezone": "UTC",
-            "forecast_days": 2
+            "forecast_days": forecast_days
         }
 
         param_string = "&".join(f"{k}={v}" for k, v in params.items())
@@ -144,8 +154,58 @@ def get_hourly_forecast(location):
         raise WeatherFetchError(f"Failed to parse hourly forecast: {e}")
 
 
+def _forecast_days_for_date(today, target_date):
+    """Compute the forecast_days needed to cover target_date's evening
+    observing session (through the following morning).
+
+    Returns:
+        int or None: Days to request, or None if target_date is outside
+        Open-Meteo's supported forecast horizon (in the past, or too far
+        in the future).
+    """
+    days_ahead = (target_date - today).days
+    if days_ahead < 0:
+        return None
+
+    # +2 comfortably covers the observing night crossing into the next
+    # calendar day, plus inclusive day-count padding
+    needed_days = days_ahead + 2
+    if needed_days > MAX_FORECAST_DAYS:
+        return None
+    return needed_days
+
+
+def get_hourly_forecast_for_date(location, target_date):
+    """Fetch hourly forecast data covering a specific observing date.
+
+    Determines whether target_date's evening/morning observing session
+    falls within Open-Meteo's supported forecast horizon (relative to
+    "today" in the observer's own timezone, not the server's), and if so
+    requests just enough forecast_days to cover it.
+
+    Args:
+        location (Location): Observer location.
+        target_date (date): Local calendar date (in location.timezone)
+            whose evening observing session needs forecast coverage.
+
+    Returns:
+        dict: Same structure as get_hourly_forecast(), or None if
+        target_date is outside the supported forecast horizon. Never
+        fabricates data for an out-of-range date.
+
+    Raises:
+        WeatherFetchError: If target_date is in range but the API request
+        itself fails after retries or the response is malformed.
+    """
+    today = datetime.now(ZoneInfo(location.timezone)).date()
+    forecast_days = _forecast_days_for_date(today, target_date)
+    if forecast_days is None:
+        return None
+    return get_hourly_forecast(location, forecast_days=forecast_days)
+
+
 def find_nearest_forecast(forecast, target_time):
-    """Find the hourly forecast entry nearest to a target UTC datetime.
+    """Find the nearest hourly forecast entry to a target UTC datetime.
 
     Args:
         forecast (dict): Hourly forecast data from get_hourly_forecast().

@@ -268,12 +268,18 @@ def get_meteor_activity(location, today=None):
         days_until_start for the soonest upcoming shower, only populated
         when there is no current activity; otherwise None).
     """
+    # Track whether the caller explicitly requested a date, distinct from
+    # `today` below (which gets defaulted for shower-status purposes).
+    # Only an explicit request is forwarded to get_lunar_data/
+    # get_darkest_window_portion, so the no-argument call path continues
+    # to use their original current-moment-based behavior unchanged.
+    explicit_target_date = today
     if today is None:
         today = datetime.now(ZoneInfo(location.timezone)).date()
     today_month_day = (today.month, today.day)
 
     try:
-        lunar = get_lunar_data(location)
+        lunar = get_lunar_data(location, target_date=explicit_target_date)
         moon_interference = _classify_moon_interference(
             lunar["illumination_percent"], lunar["above_horizon_during_window"]
         )
@@ -281,7 +287,7 @@ def get_meteor_activity(location, today=None):
         moon_interference = None
 
     try:
-        viewing_window = get_darkest_window_portion(location)
+        viewing_window = get_darkest_window_portion(location, target_date=explicit_target_date)
     except Exception:
         viewing_window = {"start": None, "end": None}
 

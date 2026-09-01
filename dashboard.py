@@ -3,6 +3,8 @@
 import streamlit as st
 import sys
 from pathlib import Path
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import folium
 from streamlit_folium import st_folium
@@ -16,8 +18,8 @@ logging.getLogger('geopy.geocoders').setLevel(logging.WARNING)
 # Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent / "src"))
 
-from weather import get_observing_conditions, get_hourly_forecast, get_conditions_for_time
-from astronomy import get_target_list, get_observing_window, get_lunar_data
+from weather import get_observing_conditions, get_hourly_forecast, get_hourly_forecast_for_date, get_conditions_for_time
+from astronomy import get_target_list, get_observing_window, get_observing_window_utc, get_lunar_data
 from scoring import calculate_visibility_score
 from config import PRESET_LOCATIONS, DEFAULT_LOCATION, Location
 from meteors import get_meteor_activity
@@ -138,21 +140,31 @@ def set_custom_theme():
         background: linear-gradient(135deg, rgba(180, 215, 255, 0.12) 0%, rgba(99, 102, 241, 0.08) 100%);
         border: 1px solid rgba(180, 215, 255, 0.3);
         border-radius: 12px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        box-shadow: 0 0 25px rgba(180, 215, 255, 0.15);
+        padding: 1rem;
+        margin: 0.5rem 0;
+        box-shadow: 0 0 20px rgba(180, 215, 255, 0.15);
         backdrop-filter: blur(10px);
         font-family: 'Montserrat', sans-serif;
     }
 
-    /* Meteor Signal sidebar panel - cool comet-like violet/cyan accent */
+    .lunar-card-title {
+        font-size: 0.95rem;
+        color: #b4d7ff;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        margin-bottom: 0.5rem;
+        text-shadow: 0 0 8px rgba(180, 215, 255, 0.4);
+        font-family: 'Montserrat', sans-serif;
+    }
+
+    /* Meteor Signal panel - cool comet-like violet/cyan accent */
     .meteor-card {
         background: linear-gradient(135deg, rgba(22, 27, 51, 0.9) 0%, rgba(30, 27, 61, 0.85) 100%);
         border: 1px solid rgba(139, 92, 246, 0.35);
-        border-radius: 10px;
-        padding: 0.9rem;
+        border-radius: 12px;
+        padding: 1rem;
         margin: 0.5rem 0;
-        box-shadow: 0 0 15px rgba(139, 92, 246, 0.18);
+        box-shadow: 0 0 20px rgba(139, 92, 246, 0.18);
         backdrop-filter: blur(10px);
         font-family: 'Montserrat', sans-serif;
     }
@@ -499,6 +511,72 @@ def render_saved_locations_selector():
     return None
 
 
+def resolve_target_date(date_mode, selected_date):
+    """Resolve the target_date to pass into date-aware astronomy/meteor
+    functions based on the sidebar's observing-date selection.
+
+    Args:
+        date_mode (str): "Tonight" or "See Another Date".
+        selected_date (date or None): The date picker's current value.
+
+    Returns:
+        date or None: None in "Tonight" mode, which preserves the
+        current-moment-based behavior of the astronomy/meteor functions
+        exactly; otherwise the selected date.
+    """
+    if date_mode == "See Another Date" and selected_date is not None:
+        return selected_date
+    return None
+
+
+def format_selected_date(target_date):
+    """Format a date as a readable label, e.g. 'October 21, 2026'."""
+    return f"{target_date:%B} {target_date.day}, {target_date.year}"
+
+
+def get_observing_plan_label(target_date):
+    """Build the label shown under the header when viewing a date other
+    than tonight, e.g. 'Observing plan for October 21, 2026'."""
+    return f"Observing plan for {format_selected_date(target_date)}"
+
+
+def should_use_live_weather(target_date):
+    """Return True only when viewing tonight (target_date is None).
+
+    Tonight uses current conditions + live hourly forecast. A future
+    alternate date within Open-Meteo's supported forecast horizon uses a
+    date-specific forecast instead. Past dates render astronomy-only, with
+    no weather API call at all. Current conditions are never presented as
+    if they apply to a different date.
+    """
+    return target_date is None
+
+
+def get_alternate_weather_unavailable_message(fetch_failed):
+    """Return the weather-unavailable message for a future alternate date.
+
+    Distinguishes a genuine API/network failure (the date is within the
+    forecast horizon but the request itself failed) from a date that is
+    simply beyond Open-Meteo's supported forecast horizon.
+    """
+    if fetch_failed:
+        return "Weather forecast is temporarily unavailable. Astronomy data is still available."
+    return "Weather forecast unavailable this far out. Astronomy data below is date-specific."
+
+
+def is_past_observing_date(location, target_date):
+    """Return True if target_date is strictly before today's local date
+    at the given location (using Location.timezone, not the server's).
+
+    Past dates skip weather entirely: no current-conditions call, no
+    forecast call, no weather-based scores -- astronomy still renders.
+    """
+    if target_date is None:
+        return False
+    today_local = datetime.now(ZoneInfo(location.timezone)).date()
+    return target_date < today_local
+
+
 def render_map_picker():
     """Render an interactive map for location selection.
 
@@ -629,36 +707,50 @@ def render_moon_svg(illumination_percent, is_waxing, size=140):
     """
 
 
-def render_lunar_section(lunar):
-    """Render the Lunar Signal section with phase details and a moon graphic."""
-    st.markdown("### 🌙 Lunar Signal")
+def format_lunar_horizon_line(above_horizon_during_window, target_date):
+    """Return the Lunar Signal horizon status line, worded for Tonight
+    vs. an alternate observing date."""
+    if target_date is None:
+        return (
+            "Above horizon during tonight's dark window"
+            if above_horizon_during_window
+            else "Below horizon during tonight's dark window"
+        )
+    return (
+        "Above horizon during this observing window"
+        if above_horizon_during_window
+        else "Below horizon during this observing window"
+    )
 
-    moon_svg = render_moon_svg(lunar["illumination_percent"], lunar["is_waxing"])
+
+def render_lunar_section(lunar, target_date=None):
+    """Render the condensed Lunar Signal card (paired side-by-side with
+    Meteor Signal) with phase details and a moon graphic."""
+    moon_svg = render_moon_svg(lunar["illumination_percent"], lunar["is_waxing"], size=100)
 
     if lunar["best_viewing_time"]:
         visibility_line = f"Best viewing time: {lunar['best_viewing_time']} | Max altitude: {lunar['max_altitude']}°"
-    elif lunar["above_horizon_during_window"]:
-        visibility_line = "Above horizon during tonight's dark window"
     else:
-        visibility_line = "Below horizon during tonight's dark window"
+        visibility_line = format_lunar_horizon_line(lunar["above_horizon_during_window"], target_date)
 
-    st.markdown(f"""
+    st.markdown(_flatten_html(f"""
     <div class="lunar-card">
-        <div style="display: flex; align-items: center; gap: 1.5rem; flex-wrap: wrap;">
+        <div class="lunar-card-title">🌙 Lunar Signal</div>
+        <div style="display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;">
             <div>{moon_svg}</div>
-            <div style="flex: 1; min-width: 200px;">
-                <div style="font-size: 1.4rem; color: #e4ecff; font-weight: bold;">{lunar['phase_name']}</div>
-                <div style="font-size: 1rem; color: #b4d7ff; margin: 0.3rem 0;">
+            <div style="flex: 1; min-width: 140px;">
+                <div style="font-size: 1.15rem; color: #e4ecff; font-weight: bold;">{lunar['phase_name']}</div>
+                <div style="font-size: 0.85rem; color: #b4d7ff; margin: 0.2rem 0;">
                     Illumination: <span style="font-weight: bold;">{lunar['illumination_percent']:.1f}%</span>
                 </div>
-                <div style="font-size: 0.9rem; color: #a0aec0;">
+                <div style="font-size: 0.78rem; color: #a0aec0;">
                     Moonrise: {lunar['moonrise'] or 'Unknown'} | Moonset: {lunar['moonset'] or 'Unknown'}
                 </div>
-                <div style="font-size: 0.9rem; color: #a0aec0; margin-top: 0.3rem;">{visibility_line}</div>
+                <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.2rem;">{visibility_line}</div>
             </div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """), unsafe_allow_html=True)
 
 
 def _flatten_html(html):
@@ -672,10 +764,28 @@ def _flatten_html(html):
     return "\n".join(line.strip() for line in html.strip().splitlines())
 
 
-def render_meteor_sidebar(meteor_activity):
-    """Render the compact Meteor Signal panel in the sidebar, below the
-    observing location controls."""
+def format_shower_status_for_display(status, target_date):
+    """Return the display label for a shower status.
+
+    Swaps "Peak Tonight" for "Peak Night" when viewing an alternate
+    observing date; meteor shower classification itself is unchanged,
+    this only affects display wording. "Near Peak" and "Active" pass
+    through unchanged.
+    """
+    if status == "Peak Tonight" and target_date is not None:
+        return "Peak Night"
+    return status
+
+
+def render_meteor_main(meteor_activity, target_date=None):
+    """Render the Meteor Signal card in the main dashboard (paired
+    side-by-side with Lunar Signal)."""
     if not meteor_activity["has_activity"]:
+        empty_message = (
+            "No major meteor shower activity tonight."
+            if target_date is None
+            else f"No major meteor shower activity for {format_selected_date(target_date)}."
+        )
         next_shower = meteor_activity.get("next_shower")
         next_shower_html = ""
         if next_shower:
@@ -688,10 +798,10 @@ def render_meteor_sidebar(meteor_activity):
                 <div style="font-size: 0.75rem; color: #a0aec0;">{next_shower['days_until_start']} day(s) until active</div>
             </div>
             """
-        st.sidebar.markdown(_flatten_html(f"""
+        st.markdown(_flatten_html(f"""
         <div class="meteor-card">
             <div class="meteor-card-title">☄️ Meteor Signal</div>
-            <div style="font-size: 0.82rem; color: #a0aec0;">No major meteor shower activity tonight.</div>
+            <div style="font-size: 0.82rem; color: #a0aec0;">{empty_message}</div>
             {_flatten_html(next_shower_html) if next_shower_html else ""}
         </div>
         """), unsafe_allow_html=True)
@@ -699,21 +809,22 @@ def render_meteor_sidebar(meteor_activity):
 
     showers = meteor_activity["active_showers"]
     primary = showers[0]
+    primary_status = format_shower_status_for_display(primary["status"], target_date)
 
     additional_html = "\n".join(_flatten_html(f"""
         <div class="meteor-divider">
             <div style="font-size: 0.85rem; color: #e4ecff; font-weight: 600;">
-                {shower['name']} <span style="color: #c4b5fd; font-size: 0.72rem;">({shower['status']})</span>
+                {shower['name']} <span style="color: #c4b5fd; font-size: 0.72rem;">({format_shower_status_for_display(shower['status'], target_date)})</span>
             </div>
             <div style="font-size: 0.72rem; color: #a0aec0;">Peak: {shower['peak_date']} | ZHR ~{shower['typical_zhr']}</div>
         </div>
         """) for shower in showers[1:])
 
-    st.sidebar.markdown(_flatten_html(f"""
+    st.markdown(_flatten_html(f"""
     <div class="meteor-card">
         <div class="meteor-card-title">☄️ Meteor Signal</div>
         <div style="font-size: 1.05rem; color: #e4ecff; font-weight: bold;">{primary['name']}</div>
-        <div style="font-size: 0.8rem; color: #c4b5fd; font-weight: 600; margin: 0.1rem 0 0.4rem 0;">{primary['status']}</div>
+        <div style="font-size: 0.8rem; color: #c4b5fd; font-weight: 600; margin: 0.1rem 0 0.4rem 0;">{primary_status}</div>
         <div style="font-size: 0.78rem; color: #a0aec0;">Peak: {primary['peak_date']} | ZHR ~{primary['typical_zhr']}</div>
         <div style="font-size: 0.78rem; color: #a0aec0;">Radiant: {primary['radiant']}</div>
         <div style="font-size: 0.78rem; color: #a0aec0;">Active: {primary['active_start']} – {primary['active_end']}</div>
@@ -724,9 +835,14 @@ def render_meteor_sidebar(meteor_activity):
     """), unsafe_allow_html=True)
 
 
-def render_weather_section(conditions):
-    """Render the weather conditions section."""
-    st.markdown("### 🌌 Tonight's Conditions")
+def render_weather_section(conditions, target_date=None):
+    """Render the weather conditions section.
+
+    Uses date-aware wording: "Tonight's Conditions" in Tonight mode, or
+    "Conditions for <Month Day>" for a future alternate date.
+    """
+    title = "🌌 Tonight's Conditions" if target_date is None else f"🌌 Conditions for {target_date:%B} {target_date.day}"
+    st.markdown(f"### {title}")
 
     col1, col2, col3, col4 = st.columns(4)
 
@@ -775,7 +891,7 @@ def render_weather_section(conditions):
         """, unsafe_allow_html=True)
 
 
-def render_targets_section(targets, window):
+def render_targets_section(targets, window, target_date=None):
     """Render the targets section with priority target and list.
 
     Each target is expected to carry a "forecast_conditions" key (dict or
@@ -792,7 +908,12 @@ def render_targets_section(targets, window):
         """, unsafe_allow_html=True)
 
     if not targets:
-        st.warning("⚠️ No suspicious extraterrestrial activity detected. No planets are observable during tonight's dark window.")
+        no_targets_message = (
+            "⚠️ No suspicious extraterrestrial activity detected. No planets are observable during tonight's dark window."
+            if target_date is None
+            else f"⚠️ No suspicious extraterrestrial activity detected. No planets are observable during the dark window for {format_selected_date(target_date)}."
+        )
+        st.warning(no_targets_message)
         return
 
     scored_targets = []
@@ -977,7 +1098,7 @@ def main():
         st.warning("💾 Save a location first, or select one from the sidebar to begin")
         return
 
-    # Save-location control for whichever location is currently active
+    # Save-location control, immediately beneath the active location controls
     if st.sidebar.button("⭐ Save this location", key="save_location_button"):
         st.session_state.saved_locations, was_added = add_saved_location(st.session_state.saved_locations, location)
         if was_added:
@@ -985,23 +1106,36 @@ def main():
         else:
             st.sidebar.info(f"'{location.name}' is already saved.")
 
-    # Meteor Signal sidebar panel, directly below the location controls
-    try:
-        meteor_activity = get_meteor_activity(location)
-    except Exception:
-        meteor_activity = None
+    # Observing Date controls, below the location section (and Save button)
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("## 🗓️ Observing Date")
+    date_mode = st.sidebar.radio(
+        "Choose date:",
+        ["Tonight", "See Another Date"],
+        horizontal=False,
+        key="date_mode"
+    )
+    if date_mode == "See Another Date":
+        selected_date = st.sidebar.date_input("Select observing date:", key="selected_observing_date")
+    else:
+        selected_date = None
 
-    if meteor_activity is not None:
-        render_meteor_sidebar(meteor_activity)
+    target_date = resolve_target_date(date_mode, selected_date)
 
     # Header
-    st.markdown(f"""
+    observing_plan_line = (
+        f'<div style="font-size: 1rem; color: #a78bfa; margin-top: 0.3rem; font-style: italic;">{get_observing_plan_label(target_date)}</div>'
+        if target_date is not None
+        else ""
+    )
+    st.markdown(_flatten_html(f"""
     <div style="text-align: center; margin-bottom: 2rem;">
         <div style="font-size: 3rem; margin-bottom: 0.5rem;">🌌 Night Signal</div>
         <div style="font-size: 1.2rem; color: #60a5fa;">{location.name}</div>
+        {observing_plan_line}
         <div style="font-size: 0.95rem; color: #a0aec0; margin-top: 0.5rem; font-style: italic;">Listening to the sky...</div>
     </div>
-    """, unsafe_allow_html=True)
+    """), unsafe_allow_html=True)
 
     # Status indicator
     st.markdown('<div class="stars">✦ Night Signal online ✦</div>', unsafe_allow_html=True)
@@ -1016,42 +1150,99 @@ def main():
 
     try:
         with st.spinner("📡 Listening to the sky..."):
-            targets = get_target_list(location)
-            window = get_observing_window(location)
+            targets = get_target_list(location, target_date=target_date)
+            window = get_observing_window(location, target_date=target_date)
 
         try:
-            lunar = get_lunar_data(location)
+            lunar = get_lunar_data(location, target_date=target_date)
         except Exception:
             lunar = None
 
         try:
-            conditions = get_observing_conditions(location)
-        except Exception as error:
-            conditions = None
-            st.warning(f"Weather signal unavailable. Astronomy data is still available. ({error})")
-
-        # Fetch the hourly forecast once and match each target to the nearest
-        # hour around its own best viewing time, rather than scoring every
-        # target with a single current-conditions snapshot
-        try:
-            hourly_forecast = get_hourly_forecast(location)
+            meteor_activity = get_meteor_activity(location, today=target_date)
         except Exception:
-            hourly_forecast = None
+            meteor_activity = None
 
-        for target in targets:
-            target["forecast_conditions"] = (
-                get_conditions_for_time(location, target.get("best_viewing_time_utc"), forecast=hourly_forecast)
-                if hourly_forecast is not None
-                else None
-            )
+        if should_use_live_weather(target_date):
+            try:
+                conditions = get_observing_conditions(location)
+            except Exception as error:
+                conditions = None
+                st.warning(f"Weather signal unavailable. Astronomy data is still available. ({error})")
+
+            # Fetch the hourly forecast once and match each target to the nearest
+            # hour around its own best viewing time, rather than scoring every
+            # target with a single current-conditions snapshot
+            try:
+                hourly_forecast = get_hourly_forecast(location)
+            except Exception:
+                hourly_forecast = None
+
+            for target in targets:
+                target["forecast_conditions"] = (
+                    get_conditions_for_time(location, target.get("best_viewing_time_utc"), forecast=hourly_forecast)
+                    if hourly_forecast is not None
+                    else None
+                )
+        else:
+            conditions = None
+
+            if is_past_observing_date(location, target_date):
+                # Past observing date: no weather API call at all, no
+                # conditions panel, no weather-based scores. Astronomy,
+                # Lunar Signal, Meteor Signal, and targets still render.
+                for target in targets:
+                    target["forecast_conditions"] = None
+            else:
+                # Future observing date: never reuse current conditions.
+                # Fetch a date-specific forecast if the date falls within
+                # Open-Meteo's supported horizon; distinguish an
+                # out-of-range date from a genuine API failure.
+                forecast_fetch_failed = False
+                try:
+                    hourly_forecast = get_hourly_forecast_for_date(location, target_date)
+                except Exception:
+                    hourly_forecast = None
+                    forecast_fetch_failed = True
+
+                if hourly_forecast is None:
+                    for target in targets:
+                        target["forecast_conditions"] = None
+                    st.info(get_alternate_weather_unavailable_message(forecast_fetch_failed))
+                else:
+                    for target in targets:
+                        target["forecast_conditions"] = get_conditions_for_time(
+                            location, target.get("best_viewing_time_utc"), forecast=hourly_forecast
+                        )
+
+                    # Representative panel conditions: the forecast entry
+                    # nearest the start of the selected night's dark
+                    # observing window (not current conditions, not a
+                    # per-target value)
+                    try:
+                        window_utc = get_observing_window_utc(location, target_date=target_date)
+                        anchor_time = window_utc.get("evening_twilight_end")
+                    except Exception:
+                        anchor_time = None
+
+                    if anchor_time is not None:
+                        conditions = get_conditions_for_time(location, anchor_time, forecast=hourly_forecast)
 
         if conditions is not None:
-            render_weather_section(conditions)
+            render_weather_section(conditions, target_date)
             st.divider()
-        if lunar is not None:
-            render_lunar_section(lunar)
+
+        if lunar is not None or meteor_activity is not None:
+            col_lunar, col_meteor = st.columns(2)
+            with col_lunar:
+                if lunar is not None:
+                    render_lunar_section(lunar, target_date)
+            with col_meteor:
+                if meteor_activity is not None:
+                    render_meteor_main(meteor_activity, target_date)
             st.divider()
-        render_targets_section(targets, window)
+
+        render_targets_section(targets, window, target_date)
 
         st.markdown("""
         ---
