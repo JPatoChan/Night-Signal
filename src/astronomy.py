@@ -372,3 +372,46 @@ def get_lunar_data(location):
 
     except Exception as e:
         raise Exception(f"Failed to calculate lunar data: {e}")
+
+
+def _midpoint_tt(start_tt, end_tt):
+    """Return the midpoint Julian date (tt) between two tt values.
+
+    Operating on continuous Julian dates (rather than local calendar
+    strings) means this is unaffected by local-midnight rollover.
+    """
+    return (start_tt + end_tt) / 2
+
+
+def get_darkest_window_portion(location):
+    """Return the later, darker portion of tonight's observing window.
+
+    This is an MVP approximation used for recommending meteor shower
+    viewing times: rather than modeling radiant altitude minute-by-minute,
+    it recommends the second half of the dark astronomical window (from
+    its midpoint to its end), since the sky is generally darkest and the
+    radiant generally highest later in the night. This is an approximation,
+    not a precise radiant-altitude calculation, and callers should treat it
+    as such.
+
+    Args:
+        location (Location): Observer location.
+
+    Returns:
+        dict: Contains 'start' and 'end' as formatted local time strings,
+        or None values for both if tonight's window could not be determined.
+    """
+    ephemeris, ts = _get_ephemeris_and_timescale()
+    observer_topos = Topos(latitude_degrees=location.latitude, longitude_degrees=location.longitude)
+    timezone = ZoneInfo(location.timezone)
+    _, window_start, window_end = _find_tonights_window(ephemeris, ts, observer_topos)
+
+    if window_start is None or window_end is None:
+        return {"start": None, "end": None}
+
+    midpoint_time = ts.tt_jd(_midpoint_tt(window_start.tt, window_end.tt))
+
+    return {
+        "start": _format_local_time(midpoint_time, timezone),
+        "end": _format_local_time(window_end, timezone)
+    }

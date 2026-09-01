@@ -20,6 +20,7 @@ from weather import get_observing_conditions, get_hourly_forecast, get_condition
 from astronomy import get_target_list, get_observing_window, get_lunar_data
 from scoring import calculate_visibility_score
 from config import PRESET_LOCATIONS, DEFAULT_LOCATION, Location
+from meteors import get_meteor_activity
 
 
 # Custom CSS for dark space theme
@@ -142,6 +143,34 @@ def set_custom_theme():
         box-shadow: 0 0 25px rgba(180, 215, 255, 0.15);
         backdrop-filter: blur(10px);
         font-family: 'Montserrat', sans-serif;
+    }
+
+    /* Meteor Signal sidebar panel - cool comet-like violet/cyan accent */
+    .meteor-card {
+        background: linear-gradient(135deg, rgba(22, 27, 51, 0.9) 0%, rgba(30, 27, 61, 0.85) 100%);
+        border: 1px solid rgba(139, 92, 246, 0.35);
+        border-radius: 10px;
+        padding: 0.9rem;
+        margin: 0.5rem 0;
+        box-shadow: 0 0 15px rgba(139, 92, 246, 0.18);
+        backdrop-filter: blur(10px);
+        font-family: 'Montserrat', sans-serif;
+    }
+
+    .meteor-card-title {
+        font-size: 0.95rem;
+        color: #c4b5fd;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        margin-bottom: 0.5rem;
+        text-shadow: 0 0 8px rgba(139, 92, 246, 0.4);
+        font-family: 'Montserrat', sans-serif;
+    }
+
+    .meteor-divider {
+        border-top: 1px solid rgba(139, 92, 246, 0.25);
+        margin-top: 0.5rem;
+        padding-top: 0.5rem;
     }
 
     /* Conditions display */
@@ -434,6 +463,69 @@ def render_lunar_section(lunar):
     """, unsafe_allow_html=True)
 
 
+def _flatten_html(html):
+    """Strip leading whitespace from every line of an HTML fragment.
+
+    Streamlit's Markdown renderer treats 4+ leading spaces as a code block,
+    so multi-line f-string HTML (which is naturally indented to match the
+    surrounding Python code) must be flattened before being passed to
+    st.markdown with unsafe_allow_html=True.
+    """
+    return "\n".join(line.strip() for line in html.strip().splitlines())
+
+
+def render_meteor_sidebar(meteor_activity):
+    """Render the compact Meteor Signal panel in the sidebar, below the
+    observing location controls."""
+    if not meteor_activity["has_activity"]:
+        next_shower = meteor_activity.get("next_shower")
+        next_shower_html = ""
+        if next_shower:
+            next_shower_html = f"""
+            <div class="meteor-divider">
+                <div style="font-size: 0.72rem; color: #a0aec0; text-transform: uppercase; letter-spacing: 0.5px;">Next signal</div>
+                <div style="font-size: 0.95rem; color: #e4ecff; font-weight: bold; margin-top: 0.15rem;">{next_shower['name']}</div>
+                <div style="font-size: 0.75rem; color: #a0aec0;">Active: {next_shower['active_start']} | Peak: {next_shower['peak_date']}</div>
+                <div style="font-size: 0.75rem; color: #a0aec0;">Typical ZHR: ~{next_shower['typical_zhr']}</div>
+                <div style="font-size: 0.75rem; color: #a0aec0;">{next_shower['days_until_start']} day(s) until active</div>
+            </div>
+            """
+        st.sidebar.markdown(_flatten_html(f"""
+        <div class="meteor-card">
+            <div class="meteor-card-title">☄️ Meteor Signal</div>
+            <div style="font-size: 0.82rem; color: #a0aec0;">No major meteor shower activity tonight.</div>
+            {_flatten_html(next_shower_html) if next_shower_html else ""}
+        </div>
+        """), unsafe_allow_html=True)
+        return
+
+    showers = meteor_activity["active_showers"]
+    primary = showers[0]
+
+    additional_html = "\n".join(_flatten_html(f"""
+        <div class="meteor-divider">
+            <div style="font-size: 0.85rem; color: #e4ecff; font-weight: 600;">
+                {shower['name']} <span style="color: #c4b5fd; font-size: 0.72rem;">({shower['status']})</span>
+            </div>
+            <div style="font-size: 0.72rem; color: #a0aec0;">Peak: {shower['peak_date']} | ZHR ~{shower['typical_zhr']}</div>
+        </div>
+        """) for shower in showers[1:])
+
+    st.sidebar.markdown(_flatten_html(f"""
+    <div class="meteor-card">
+        <div class="meteor-card-title">☄️ Meteor Signal</div>
+        <div style="font-size: 1.05rem; color: #e4ecff; font-weight: bold;">{primary['name']}</div>
+        <div style="font-size: 0.8rem; color: #c4b5fd; font-weight: 600; margin: 0.1rem 0 0.4rem 0;">{primary['status']}</div>
+        <div style="font-size: 0.78rem; color: #a0aec0;">Peak: {primary['peak_date']} | ZHR ~{primary['typical_zhr']}</div>
+        <div style="font-size: 0.78rem; color: #a0aec0;">Radiant: {primary['radiant']}</div>
+        <div style="font-size: 0.78rem; color: #a0aec0;">Active: {primary['active_start']} – {primary['active_end']}</div>
+        <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem;">Best window: {primary['best_viewing_window'] or 'Unknown'}</div>
+        <div style="font-size: 0.78rem; color: #a0aec0;">Moon interference: {primary['moon_interference'] or 'Unknown'}</div>
+        {additional_html}
+    </div>
+    """), unsafe_allow_html=True)
+
+
 def render_weather_section(conditions):
     """Render the weather conditions section."""
     st.markdown("### 🌌 Tonight's Conditions")
@@ -648,6 +740,15 @@ def main():
             # No location selected yet; show warning and stop
             st.warning("👆 Click a location on the map to begin")
             return
+
+    # Meteor Signal sidebar panel, directly below the location controls
+    try:
+        meteor_activity = get_meteor_activity(location)
+    except Exception:
+        meteor_activity = None
+
+    if meteor_activity is not None:
+        render_meteor_sidebar(meteor_activity)
 
     # Header
     st.markdown(f"""
