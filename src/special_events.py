@@ -173,6 +173,14 @@ ISS_MIN_ALTITUDE_DEGREES = 20
 ISS_MAJOR_ALTITUDE_DEGREES = 70
 ISS_STRONG_ALTITUDE_DEGREES = 40
 ISS_TLE_VALIDITY_DAYS = 3
+ISS_TLE_FETCH_TIMEOUT_SECONDS = 1.25
+ISS_TLE_CACHE_TTL_SECONDS = 900
+ISS_TLE_FAILURE_TTL_SECONDS = 300
+
+_iss_tle_cache = None
+_iss_tle_cache_time = 0
+_iss_tle_failure_message = None
+_iss_tle_failure_time = 0
 
 _MONTH_ABBREVIATIONS = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -844,16 +852,31 @@ def get_comet_events(location, target_date=None):
 
 def _fetch_iss_tle():
     """Fetch the current ISS TLE from CelesTrak."""
+    global _iss_tle_cache, _iss_tle_cache_time, _iss_tle_failure_message, _iss_tle_failure_time
+
+    now = time.time()
+    if _iss_tle_cache is not None and now - _iss_tle_cache_time < ISS_TLE_CACHE_TTL_SECONDS:
+        return _iss_tle_cache
+    if _iss_tle_failure_message is not None and now - _iss_tle_failure_time < ISS_TLE_FAILURE_TTL_SECONDS:
+        raise SpecialEventsFetchError(_iss_tle_failure_message)
+
     try:
-        with urllib.request.urlopen(ISS_TLE_URL, timeout=5) as response:
+        with urllib.request.urlopen(ISS_TLE_URL, timeout=ISS_TLE_FETCH_TIMEOUT_SECONDS) as response:
             lines = response.read().decode().strip().splitlines()
     except (TimeoutError, urllib.error.URLError) as error:
-        raise SpecialEventsFetchError(f"Failed to fetch ISS TLE: {error}") from error
+        _iss_tle_failure_message = f"Failed to fetch ISS TLE: {error}"
+        _iss_tle_failure_time = now
+        raise SpecialEventsFetchError(_iss_tle_failure_message) from error
 
     if len(lines) < 3:
-        raise SpecialEventsFetchError("Failed to parse ISS TLE: response did not contain three lines")
+        _iss_tle_failure_message = "Failed to parse ISS TLE: response did not contain three lines"
+        _iss_tle_failure_time = now
+        raise SpecialEventsFetchError(_iss_tle_failure_message)
 
-    return lines[0].strip(), lines[1].strip(), lines[2].strip()
+    _iss_tle_cache = (lines[0].strip(), lines[1].strip(), lines[2].strip())
+    _iss_tle_cache_time = now
+    _iss_tle_failure_message = None
+    return _iss_tle_cache
 
 
 def _classify_iss_signal_level(max_altitude_degrees):
@@ -1040,6 +1063,65 @@ def _normalize_upcoming_event(event, event_date):
     }
 
 
+def _coarse_conjunction_candidate_dates(location, start_date, max_days_ahead):
+    """Quickly prefilter dates that could plausibly contain a close planet pair.
+
+    The exact conjunction rules still run through get_planetary_conjunctions().
+    This coarse pass only avoids evaluating a full observing window for dates
+    where every bright-planet pair is clearly too far apart.
+    """
+    candidate_dates = [start_date + timedelta(days=offset) for offset in range(max_days_ahead)]
+    if not candidate_dates:
+        return []
+
+    try:
+        ephemeris, ts = _get_ephemeris_and_timescale()
+        observer = ephemeris["earth"] + Topos(latitude_degrees=location.latitude, longitude_degrees=location.longitude)
+        timezone_info = ZoneInfo(location.timezone)
+        sample_tt = [
+            _local_noon_time(ts, candidate_date, timezone_info).tt + 0.4
+            for candidate_date in candidate_dates
+        ]
+        sample_times = ts.tt_jd(sample_tt)
+        apparent_positions = {
+            planet_id: observer.at(sample_times).observe(ephemeris[planet_id]).apparent()
+            for planet_id in PLANET_NAMES
+        }
+
+        minimum_separations = np.full(len(candidate_dates), 180.0)
+        for planet_a_id, planet_b_id in combinations(PLANET_NAMES, 2):
+            separations = apparent_positions[planet_a_id].separation_from(apparent_positions[planet_b_id]).degrees
+            minimum_separations = np.minimum(minimum_separations, separations)
+
+        coarse_threshold = INTERESTING_CONJUNCTION_DEGREES + 2.0
+        return [
+            candidate_date
+            for candidate_date, separation in zip(candidate_dates, minimum_separations)
+            if float(separation) <= coarse_threshold
+        ]
+    except Exception:
+        return candidate_dates
+
+
+def _add_upcoming_candidate(candidates, event):
+    """Append a non-empty upcoming event candidate."""
+    if event is not None:
+        candidates.append(event)
+
+
+def _bounded_upcoming_horizon(candidates, start_date, default_horizon, limit):
+    """Limit later source searches to dates that can still affect the top results."""
+    if len(candidates) < limit:
+        return default_horizon
+    cutoff_date = sorted(candidates, key=lambda event: (
+        event["date"],
+        _signal_strength_rank(event["signal_level"]),
+        _observability_rank(event["event_type"]),
+        event["name"],
+    ))[limit - 1]["date"]
+    return max(1, min(default_horizon, (cutoff_date - start_date).days + 1))
+
+
 def get_next_notable_neo(location, target_date=None, max_days_ahead=30):
     """Find the next future date containing at least one notable NEO.
 
@@ -1072,8 +1154,7 @@ def get_next_notable_neo(location, target_date=None, max_days_ahead=30):
 def get_next_planetary_conjunction(location, target_date=None, max_days_ahead=90):
     """Find the next future observable planetary conjunction."""
     start_date = _upcoming_start_date(location, target_date)
-    for offset in range(max_days_ahead):
-        candidate_date = start_date + timedelta(days=offset)
+    for candidate_date in _coarse_conjunction_candidate_dates(location, start_date, max_days_ahead):
         try:
             events = get_planetary_conjunctions(location, candidate_date)
         except Exception:
@@ -1143,30 +1224,51 @@ def get_next_iss_pass(location, target_date=None, max_days_ahead=ISS_TLE_VALIDIT
     return None
 
 
-def get_upcoming_special_signals(location, target_date=None, limit=2):
+def get_upcoming_special_signals(location, target_date=None, limit=2, skip_sources=None):
     """Collect the soonest Coming Up events across existing sources.
 
     Each source contributes at most one candidate. Chronological order is
     primary; signal strength and direct observability are tie-breakers.
     """
-    source_functions = [
-        get_next_notable_neo,
-        get_next_planetary_conjunction,
-        get_next_eclipse_event,
-        get_next_comet_event,
-        get_next_iss_pass,
-    ]
+    skip_sources = set(skip_sources or [])
     earliest_allowed = _upcoming_start_date(location, target_date)
     candidates = []
 
-    for source in source_functions:
+    cheap_sources = [
+        ("eclipse", get_next_eclipse_event),
+        ("comet", get_next_comet_event),
+        ("neo", get_next_notable_neo),
+    ]
+
+    for source_name, source in cheap_sources:
+        if source_name in skip_sources:
+            continue
         try:
             event = source(location, target_date)
         except Exception:
             event = None
         if event is None or event["date"] < earliest_allowed:
             continue
-        candidates.append(event)
+
+        _add_upcoming_candidate(candidates, event)
+
+    if "conjunction" not in skip_sources:
+        conjunction_horizon = _bounded_upcoming_horizon(candidates, earliest_allowed, 90, limit)
+        try:
+            event = get_next_planetary_conjunction(location, target_date, max_days_ahead=conjunction_horizon)
+        except Exception:
+            event = None
+        if event is not None and event["date"] >= earliest_allowed:
+            _add_upcoming_candidate(candidates, event)
+
+    if "iss" not in skip_sources:
+        iss_horizon = _bounded_upcoming_horizon(candidates, earliest_allowed, ISS_TLE_VALIDITY_DAYS, limit)
+        try:
+            event = get_next_iss_pass(location, target_date, max_days_ahead=iss_horizon)
+        except Exception:
+            event = None
+        if event is not None and event["date"] >= earliest_allowed:
+            _add_upcoming_candidate(candidates, event)
 
     candidates.sort(key=lambda event: (
         event["date"],
@@ -1198,19 +1300,22 @@ def get_special_signal(location, target_date=None):
         event dicts, most notable first) and "has_events" (bool).
     """
     source_functions = [
-        get_eclipse_events,
-        get_comet_events,
-        get_iss_passes,
-        get_planetary_conjunctions,
-        _get_ranked_neo_events,
+        ("eclipse", get_eclipse_events),
+        ("comet", get_comet_events),
+        ("iss", get_iss_passes),
+        ("conjunction", get_planetary_conjunctions),
+        ("neo", _get_ranked_neo_events),
     ]
 
     combined = []
     failures = []
-    for source in source_functions:
+    failed_source_names = set()
+    for source_name, source in source_functions:
         source_events, failed = _source_events_or_failure(source, location, target_date)
         combined.extend(source_events)
         failures.append(failed)
+        if failed:
+            failed_source_names.add(source_name)
 
     combined.sort(key=lambda event: (_special_event_priority(event), event.get("event_time") or ""))
     events = combined[:MAX_EVENTS]
@@ -1220,7 +1325,12 @@ def get_special_signal(location, target_date=None):
     else:
         upcoming_limit = 1 if events else 2
         try:
-            upcoming = get_upcoming_special_signals(location, target_date, limit=upcoming_limit)
+            upcoming = get_upcoming_special_signals(
+                location,
+                target_date,
+                limit=upcoming_limit,
+                skip_sources=failed_source_names,
+            )
         except Exception:
             upcoming = []
 

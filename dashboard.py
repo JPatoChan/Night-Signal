@@ -27,6 +27,40 @@ from special_events import get_special_signal
 from constellations import get_constellation_signal
 
 
+def _location_cache_key(location):
+    """Small stable cache key for location/date-dependent calculations."""
+    return (location.name, round(location.latitude, 4), round(location.longitude, 4), location.timezone)
+
+
+def _tonight_cache_bucket(location, target_date):
+    """Keep Tonight-mode astronomy fresh without caching live weather."""
+    if target_date is not None:
+        return target_date.isoformat()
+    return datetime.now(ZoneInfo(location.timezone)).strftime("%Y-%m-%d-%H")
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def _get_cached_observing_plan(location_key, target_date, freshness_bucket):
+    """Cache expensive deterministic astronomy signals for dashboard reruns."""
+    name, latitude, longitude, timezone = location_key
+    location = Location(name=name, latitude=latitude, longitude=longitude, timezone=timezone)
+    return {
+        "targets": get_target_list(location, target_date=target_date),
+        "window": get_observing_window(location, target_date=target_date),
+        "lunar": get_lunar_data(location, target_date=target_date),
+        "meteor_activity": get_meteor_activity(location, today=target_date),
+        "constellation_signal": get_constellation_signal(location, target_date=target_date),
+    }
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def _get_cached_special_signal(location_key, target_date, freshness_bucket):
+    """Cache Special Signal briefly to avoid repeat NASA/TLE work on reruns."""
+    name, latitude, longitude, timezone = location_key
+    location = Location(name=name, latitude=latitude, longitude=longitude, timezone=timezone)
+    return get_special_signal(location, target_date=target_date)
+
+
 # Custom CSS for dark space theme
 def set_custom_theme():
     """Apply custom CSS styling for space theme."""
@@ -144,6 +178,7 @@ def set_custom_theme():
         border-radius: 12px;
         padding: 1rem;
         margin: 0.5rem 0;
+        min-height: 255px;
         box-shadow: 0 0 20px rgba(180, 215, 255, 0.15);
         backdrop-filter: blur(10px);
         font-family: 'Montserrat', sans-serif;
@@ -166,6 +201,7 @@ def set_custom_theme():
         border-radius: 12px;
         padding: 1rem;
         margin: 0.5rem 0;
+        min-height: 255px;
         box-shadow: 0 0 20px rgba(139, 92, 246, 0.18);
         backdrop-filter: blur(10px);
         font-family: 'Montserrat', sans-serif;
@@ -194,6 +230,7 @@ def set_custom_theme():
         border-radius: 12px;
         padding: 1rem;
         margin: 0.5rem 0;
+        min-height: 255px;
         box-shadow: 0 0 20px rgba(96, 165, 250, 0.12);
         backdrop-filter: blur(10px);
         font-family: 'Montserrat', sans-serif;
@@ -320,6 +357,7 @@ def km_to_miles(km):
     return km * 0.621371
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_timezone_from_coordinates(latitude, longitude):
     """Resolve IANA timezone name from latitude/longitude coordinates.
 
@@ -338,6 +376,7 @@ def get_timezone_from_coordinates(latitude, longitude):
         return "UTC"
 
 
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_location_name_from_coordinates(latitude, longitude):
     """Resolve human-readable location name from coordinates using reverse geocoding.
 
@@ -1459,26 +1498,17 @@ def main():
 
     try:
         with st.spinner("📡 Listening to the sky..."):
-            targets = get_target_list(location, target_date=target_date)
-            window = get_observing_window(location, target_date=target_date)
+            location_key = _location_cache_key(location)
+            freshness_bucket = _tonight_cache_bucket(location, target_date)
+            observing_plan = _get_cached_observing_plan(location_key, target_date, freshness_bucket)
+            targets = observing_plan["targets"]
+            window = observing_plan["window"]
+            lunar = observing_plan.get("lunar")
+            meteor_activity = observing_plan.get("meteor_activity")
+            constellation_signal = observing_plan.get("constellation_signal")
 
         try:
-            lunar = get_lunar_data(location, target_date=target_date)
-        except Exception:
-            lunar = None
-
-        try:
-            meteor_activity = get_meteor_activity(location, today=target_date)
-        except Exception:
-            meteor_activity = None
-
-        try:
-            constellation_signal = get_constellation_signal(location, target_date=target_date)
-        except Exception:
-            constellation_signal = None
-
-        try:
-            special_activity = get_special_signal(location, target_date=target_date)
+            special_activity = _get_cached_special_signal(location_key, target_date, freshness_bucket)
         except Exception:
             special_activity = None
 

@@ -19,18 +19,15 @@ from special_events import (
     MAX_EVENTS,
     MAJOR_SIGNAL_THRESHOLD,
     STRONG_SIGNAL_THRESHOLD,
-    MIN_NOTABLE_SCORE,
     SpecialEventsFetchError,
     _classify_signal_level,
     _parse_neo,
     get_special_signal,
     get_planetary_conjunctions,
     _classify_conjunction_signal_level,
-    _build_conjunction_summary,
     MAJOR_CONJUNCTION_DEGREES,
     STRONG_CONJUNCTION_DEGREES,
     INTERESTING_CONJUNCTION_DEGREES,
-    CONJUNCTION_MIN_ALTITUDE_DEGREES,
     ISS_MAJOR_ALTITUDE_DEGREES,
     ISS_MIN_ALTITUDE_DEGREES,
     ISS_STRONG_ALTITUDE_DEGREES,
@@ -90,6 +87,21 @@ def _mock_neo_response(date_str, raw_neos):
     return mock_response
 
 
+def _mock_no_upcoming():
+    """Keep primary Special Signal tests from doing fallback/network work."""
+    return patch.object(special_events, "get_upcoming_special_signals", return_value=[])
+
+
+def _mock_non_neo_primary_sources():
+    """Keep NEO-focused tests from doing unrelated primary-source work."""
+    stack = ExitStack()
+    stack.enter_context(patch.object(special_events, "get_eclipse_events", return_value=[]))
+    stack.enter_context(patch.object(special_events, "get_comet_events", return_value=[]))
+    stack.enter_context(patch.object(special_events, "get_iss_passes", return_value=[]))
+    stack.enter_context(patch.object(special_events, "get_planetary_conjunctions", return_value=[]))
+    return stack
+
+
 def test_selected_date_is_passed_to_neo_fetch():
     """get_special_signal should query the NASA feed for the selected
     target_date, not the current server date."""
@@ -100,7 +112,7 @@ def test_selected_date_is_passed_to_neo_fetch():
         captured_urls.append(url)
         return _mock_neo_response(target_date.isoformat(), [])
 
-    with patch.object(special_events.urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(special_events.urllib.request, "urlopen", side_effect=fake_urlopen), _mock_non_neo_primary_sources(), _mock_no_upcoming():
         get_special_signal(NASHVILLE, target_date=target_date)
 
     assert any("2026-10-21" in url for url in captured_urls)
@@ -113,7 +125,7 @@ def test_successful_api_parsing():
     raw_neo = _make_raw_neo("(2026 XY1)", lunar_distance=0.5, diameter_min_km=0.5, diameter_max_km=1.2, hazardous=True)
     mock_response = _mock_neo_response(target_date.isoformat(), [raw_neo])
 
-    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response):
+    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response), _mock_non_neo_primary_sources(), _mock_no_upcoming():
         result = get_special_signal(NASHVILLE, target_date=target_date)
 
     assert result["has_events"] is True
@@ -134,7 +146,7 @@ def test_ranking_chooses_most_notable_events():
     big_close_hazardous = _make_raw_neo("Big Close Hazardous", lunar_distance=0.3, diameter_min_km=1.0, diameter_max_km=1.5, hazardous=True)
     mock_response = _mock_neo_response(target_date.isoformat(), [small_far, big_close_hazardous])
 
-    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response):
+    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response), _mock_non_neo_primary_sources(), _mock_no_upcoming():
         result = get_special_signal(NASHVILLE, target_date=target_date)
 
     names = [event["name"] for event in result["events"]]
@@ -151,7 +163,7 @@ def test_ranking_caps_output_at_three():
     ]
     mock_response = _mock_neo_response(target_date.isoformat(), raw_neos)
 
-    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response):
+    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response), _mock_non_neo_primary_sources(), _mock_no_upcoming():
         result = get_special_signal(NASHVILLE, target_date=target_date)
 
     assert len(result["events"]) == MAX_EVENTS
@@ -173,7 +185,7 @@ def test_empty_data_produces_clean_empty_state():
     target_date = date(2026, 10, 21)
     mock_response = _mock_neo_response(target_date.isoformat(), [])
 
-    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response):
+    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response), _mock_non_neo_primary_sources(), _mock_no_upcoming():
         result = get_special_signal(NASHVILLE, target_date=target_date)
 
     assert result["has_events"] is False
@@ -187,7 +199,7 @@ def test_below_threshold_events_are_excluded():
     tiny_distant = _make_raw_neo("Tiny Distant", lunar_distance=29, diameter_min_km=0.01, diameter_max_km=0.015, hazardous=False)
     mock_response = _mock_neo_response(target_date.isoformat(), [tiny_distant])
 
-    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response):
+    with patch.object(special_events.urllib.request, "urlopen", return_value=mock_response), _mock_non_neo_primary_sources(), _mock_no_upcoming():
         result = get_special_signal(NASHVILLE, target_date=target_date)
 
     assert result["has_events"] is False
@@ -198,7 +210,7 @@ def test_api_failure_degrades_gracefully():
     """A NASA API failure must not raise or suppress other Special Signal
     sources (e.g. conjunctions) -- get_special_signal() isolates NEO
     fetch failures internally and simply omits NEO events."""
-    with patch.object(special_events.urllib.request, "urlopen", side_effect=special_events.urllib.error.URLError("boom")):
+    with patch.object(special_events.urllib.request, "urlopen", side_effect=special_events.urllib.error.URLError("boom")), _mock_non_neo_primary_sources(), _mock_no_upcoming():
         result = get_special_signal(NASHVILLE, target_date=date(2026, 10, 21))
 
     assert isinstance(result, dict)
@@ -217,7 +229,7 @@ def test_alternate_date_does_not_use_current_date():
         captured_urls.append(url)
         return _mock_neo_response(target_date.isoformat(), [])
 
-    with patch.object(special_events.urllib.request, "urlopen", side_effect=fake_urlopen):
+    with patch.object(special_events.urllib.request, "urlopen", side_effect=fake_urlopen), _mock_non_neo_primary_sources(), _mock_no_upcoming():
         get_special_signal(NASHVILLE, target_date=target_date)
 
     assert any(target_date.isoformat() in url for url in captured_urls)
@@ -776,7 +788,8 @@ def test_empty_successful_sources_produce_clean_empty_state():
          patch.object(special_events, "get_comet_events", return_value=[]), \
          patch.object(special_events, "get_iss_passes", return_value=[]), \
          patch.object(special_events, "get_planetary_conjunctions", return_value=[]), \
-         patch.object(special_events, "_get_ranked_neo_events", return_value=[]):
+            patch.object(special_events, "_get_ranked_neo_events", return_value=[]), \
+            _mock_no_upcoming():
         result = get_special_signal(NASHVILLE)
 
     assert result["has_events"] is False
@@ -790,7 +803,8 @@ def test_total_special_signal_failure_is_reported_gracefully():
          patch.object(special_events, "get_comet_events", side_effect=RuntimeError("boom")), \
          patch.object(special_events, "get_iss_passes", side_effect=RuntimeError("boom")), \
          patch.object(special_events, "get_planetary_conjunctions", side_effect=RuntimeError("boom")), \
-         patch.object(special_events, "_get_ranked_neo_events", side_effect=RuntimeError("boom")):
+            patch.object(special_events, "_get_ranked_neo_events", side_effect=RuntimeError("boom")), \
+            patch.object(special_events, "get_upcoming_special_signals", side_effect=RuntimeError("boom")):
         result = get_special_signal(NASHVILLE)
 
     assert result["has_events"] is False
@@ -854,7 +868,12 @@ def test_next_planetary_conjunction_finds_first_observable_date_and_stops():
             return [candidate_event]
         return []
 
-    with patch.object(special_events, "get_planetary_conjunctions", side_effect=fake_conjunctions):
+    with patch.object(special_events, "_coarse_conjunction_candidate_dates", return_value=[
+            selected_date + timedelta(days=1),
+            selected_date + timedelta(days=2),
+            selected_date + timedelta(days=3),
+         ]), \
+         patch.object(special_events, "get_planetary_conjunctions", side_effect=fake_conjunctions):
         event = get_next_planetary_conjunction(NASHVILLE, target_date=selected_date, max_days_ahead=10)
 
     assert event["name"] == "Venus & Jupiter"
@@ -1008,7 +1027,7 @@ def test_get_special_signal_limits_upcoming_by_primary_count():
         result = get_special_signal(NASHVILLE)
     assert [event["name"] for event in result["events"]] == ["Primary 1"]
     assert len(result["upcoming"]) == 1
-    mock_upcoming.assert_called_once_with(NASHVILLE, None, limit=1)
+    mock_upcoming.assert_called_once_with(NASHVILLE, None, limit=1, skip_sources=set())
 
     with patch.object(special_events, "get_eclipse_events", return_value=[]), \
          patch.object(special_events, "get_comet_events", return_value=[]), \
@@ -1019,7 +1038,7 @@ def test_get_special_signal_limits_upcoming_by_primary_count():
         result = get_special_signal(NASHVILLE)
     assert result["events"] == []
     assert len(result["upcoming"]) == 2
-    mock_upcoming.assert_called_once_with(NASHVILLE, None, limit=2)
+    mock_upcoming.assert_called_once_with(NASHVILLE, None, limit=2, skip_sources=set())
     print("✓ Primary event count controls Coming Up limits without displacing primaries")
 
 
