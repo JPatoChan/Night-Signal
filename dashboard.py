@@ -23,6 +23,7 @@ from astronomy import get_target_list, get_observing_window, get_observing_windo
 from scoring import calculate_visibility_score
 from config import PRESET_LOCATIONS, DEFAULT_LOCATION, Location
 from meteors import get_meteor_activity
+from special_events import get_special_signal
 
 
 # Custom CSS for dark space theme
@@ -183,6 +184,49 @@ def set_custom_theme():
         border-top: 1px solid rgba(139, 92, 246, 0.25);
         margin-top: 0.5rem;
         padding-top: 0.5rem;
+    }
+
+    /* Special Signal panel - mysterious mint/yellow accent for notable events */
+    .special-card {
+        background: linear-gradient(135deg, rgba(253, 224, 71, 0.10) 0%, rgba(74, 222, 128, 0.08) 100%);
+        border: 1px solid rgba(253, 224, 71, 0.3);
+        border-radius: 12px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        box-shadow: 0 0 20px rgba(253, 224, 71, 0.12);
+        backdrop-filter: blur(10px);
+        font-family: 'Montserrat', sans-serif;
+    }
+
+    .special-card-title {
+        font-size: 0.85rem;
+        color: #fde047;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        margin-bottom: 0.4rem;
+        text-shadow: 0 0 8px rgba(253, 224, 71, 0.4);
+        font-family: 'Montserrat', sans-serif;
+    }
+
+    .special-upcoming-row {
+        background: rgba(253, 224, 71, 0.06);
+        border-left: 3px solid rgba(253, 224, 71, 0.55);
+        border-radius: 8px;
+        padding: 0.55rem 0.7rem;
+        margin: 0.35rem 0;
+        font-family: 'Montserrat', sans-serif;
+    }
+
+    .special-upcoming-title {
+        font-size: 0.84rem;
+        color: #e4ecff;
+        font-weight: 700;
+    }
+
+    .special-upcoming-meta {
+        font-size: 0.74rem;
+        color: #a0aec0;
+        margin-top: 0.15rem;
     }
 
     /* Conditions display */
@@ -835,6 +879,150 @@ def render_meteor_main(meteor_activity, target_date=None):
     """), unsafe_allow_html=True)
 
 
+def _render_special_upcoming(upcoming_events):
+    """Render compact secondary Coming Up rows."""
+    if not upcoming_events:
+        return
+
+    st.markdown("#### Coming Up")
+    for event in upcoming_events:
+        event_date = event.get("date")
+        if hasattr(event_date, "month"):
+            date_label = f"{event_date:%b} {event_date.day}"
+        else:
+            date_label = str(event_date)
+
+        event_time = event.get("event_time")
+        time_line = f" • {event_time}" if event_time else ""
+        if event.get("event_type") == "ISS Pass" and event_time:
+            time_line = f" • Best look {event_time}"
+
+        st.markdown(_flatten_html(f"""
+        <div class="special-upcoming-row">
+            <div class="special-upcoming-title">{date_label} • {event['name']}</div>
+            <div class="special-upcoming-meta">{event['signal_level']} • {event['event_type']}{time_line}</div>
+        </div>
+        """), unsafe_allow_html=True)
+
+
+def render_special_signal(special_activity, target_date=None):
+    """Render the ✨ Special Signal section.
+
+    Event types carry different visibility guarantees. NEOs remain
+    informational; conjunctions/eclipses/comets/ISS are only described as
+    observable when their source logic supports that claim.
+    """
+    st.markdown("### ✨ Special Signal")
+
+    if special_activity is None:
+        st.info("Special Signal data is temporarily unavailable.")
+        return
+
+    if special_activity.get("all_sources_failed"):
+        st.info("Special Signal data is temporarily unavailable.")
+        return
+
+    upcoming_events = special_activity.get("upcoming", [])
+
+    if not special_activity["has_events"]:
+        if upcoming_events:
+            st.info("No major Special Signals for this observing date.")
+            _render_special_upcoming(upcoming_events)
+            return
+        st.info("No unusual sky signals detected for this observing date.")
+        return
+
+    for event in special_activity["events"]:
+        if event["event_type"] == "Planetary Conjunction":
+            details = event["details"]
+            when = "tonight" if target_date is None else format_selected_date(target_date)
+            st.markdown(_flatten_html(f"""
+            <div class="special-card">
+                <div class="special-card-title">{event['signal_level']} • {event['event_type']}</div>
+                <div style="font-size: 1.05rem; color: #e4ecff; font-weight: bold;">{event['name']}</div>
+                <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem;">Best look {when}: {details['best_viewing_time']} • about {details['approximate_altitude_degrees']:.0f}° above the horizon</div>
+                <div style="font-size: 0.78rem; color: #a0aec0;">Closest separation: {details['angular_separation_degrees']:.1f}°</div>
+                <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem; font-style: italic;">{event['summary']}</div>
+            </div>
+            """), unsafe_allow_html=True)
+            continue
+
+        if event["event_type"] in {"Solar Eclipse", "Lunar Eclipse", "Lunar Occultation"}:
+            details = event["details"]
+            altitude = details.get("altitude_degrees")
+            altitude_line = (
+                f"Approx. altitude: {altitude:.0f}° above the horizon"
+                if altitude is not None else "Local visibility confirmed"
+            )
+            st.markdown(_flatten_html(f"""
+            <div class="special-card">
+                <div class="special-card-title">{event['signal_level']} • {event['event_type']}</div>
+                <div style="font-size: 1.05rem; color: #e4ecff; font-weight: bold;">{event['name']}</div>
+                <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem;">Peak: {details['event_time']}</div>
+                <div style="font-size: 0.78rem; color: #a0aec0;">{altitude_line}</div>
+                <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem; font-style: italic;">{event['summary']}</div>
+            </div>
+            """), unsafe_allow_html=True)
+            continue
+
+        if event["event_type"] == "Comet":
+            details = event["details"]
+            magnitude = details.get("magnitude")
+            magnitude_text = f"Magnitude: {magnitude:.1f}" if magnitude is not None else "Magnitude: Unknown"
+            st.markdown(_flatten_html(f"""
+            <div class="special-card">
+                <div class="special-card-title">{event['signal_level']} • Comet</div>
+                <div style="font-size: 1.05rem; color: #e4ecff; font-weight: bold;">{event['name']}</div>
+                <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem;">Approx. best look: {details['best_viewing_time']} • about {details['approximate_altitude_degrees']:.0f}° above the horizon</div>
+                <div style="font-size: 0.78rem; color: #a0aec0;">{magnitude_text}</div>
+                <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem; font-style: italic;">{event['summary']}</div>
+            </div>
+            """), unsafe_allow_html=True)
+            continue
+
+        if event["event_type"] == "ISS Pass":
+            details = event["details"]
+            st.markdown(_flatten_html(f"""
+            <div class="special-card">
+                <div class="special-card-title">{event['signal_level']} • ISS Pass</div>
+                <div style="font-size: 1.05rem; color: #e4ecff; font-weight: bold;">{event['name']}</div>
+                <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem;">Best look: {details['best_viewing_time']}</div>
+                <div style="font-size: 0.78rem; color: #a0aec0;">Peak altitude: {details['max_altitude_degrees']:.0f}° • Visible for ~{details['duration_minutes']} minutes</div>
+                <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem; font-style: italic;">{event['summary']}</div>
+            </div>
+            """), unsafe_allow_html=True)
+            continue
+
+        details = event["details"]
+        miss_distance = (
+            f"{details['miss_distance_miles']:,.0f} mi"
+            if details["miss_distance_miles"] is not None else "Unknown"
+        )
+        velocity = (
+            f"{details['velocity_mph']:,.0f} mph"
+            if details["velocity_mph"] is not None else "Unknown"
+        )
+        size = (
+            f"{details['diameter_min_ft']:,.0f}-{details['diameter_max_ft']:,.0f} ft"
+            if details["diameter_min_ft"] is not None and details["diameter_max_ft"] is not None
+            else "Unknown"
+        )
+        hazardous = "Yes" if details["is_potentially_hazardous"] else "No"
+
+        st.markdown(_flatten_html(f"""
+        <div class="special-card">
+            <div class="special-card-title">{event['signal_level']} • Near-Earth Object Flyby</div>
+            <div style="font-size: 1.05rem; color: #e4ecff; font-weight: bold;">{event['name']}</div>
+            <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem;">Closest approach: {event['event_time'] or 'Unknown'}</div>
+            <div style="font-size: 0.78rem; color: #a0aec0;">Miss distance: {miss_distance} | Velocity: {velocity}</div>
+            <div style="font-size: 0.78rem; color: #a0aec0;">Estimated size: {size} | Potentially hazardous: {hazardous}</div>
+            <div style="font-size: 0.78rem; color: #a0aec0; margin-top: 0.3rem; font-style: italic;">{event['summary']}</div>
+        </div>
+        """), unsafe_allow_html=True)
+
+    _render_special_upcoming(upcoming_events)
+
+
 def render_weather_section(conditions, target_date=None):
     """Render the weather conditions section.
 
@@ -1163,6 +1351,11 @@ def main():
         except Exception:
             meteor_activity = None
 
+        try:
+            special_activity = get_special_signal(location, target_date=target_date)
+        except Exception:
+            special_activity = None
+
         if should_use_live_weather(target_date):
             try:
                 conditions = get_observing_conditions(location)
@@ -1241,6 +1434,9 @@ def main():
                 if meteor_activity is not None:
                     render_meteor_main(meteor_activity, target_date)
             st.divider()
+
+        render_special_signal(special_activity, target_date)
+        st.divider()
 
         render_targets_section(targets, window, target_date)
 
