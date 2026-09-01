@@ -24,6 +24,7 @@ from scoring import calculate_visibility_score
 from config import PRESET_LOCATIONS, DEFAULT_LOCATION, Location
 from meteors import get_meteor_activity
 from special_events import get_special_signal
+from constellations import get_constellation_signal
 
 
 # Custom CSS for dark space theme
@@ -184,6 +185,46 @@ def set_custom_theme():
         border-top: 1px solid rgba(139, 92, 246, 0.25);
         margin-top: 0.5rem;
         padding-top: 0.5rem;
+    }
+
+    /* Constellation Signal panel - quiet lavender/blue chart styling */
+    .constellation-card {
+        background: linear-gradient(135deg, rgba(96, 165, 250, 0.12) 0%, rgba(167, 139, 250, 0.10) 100%);
+        border: 1px solid rgba(167, 139, 250, 0.35);
+        border-radius: 12px;
+        padding: 1rem;
+        margin: 0.5rem 0;
+        box-shadow: 0 0 20px rgba(96, 165, 250, 0.12);
+        backdrop-filter: blur(10px);
+        font-family: 'Montserrat', sans-serif;
+    }
+
+    .constellation-card-title {
+        font-size: 0.85rem;
+        color: #c4b5fd;
+        font-weight: 700;
+        letter-spacing: 0.3px;
+        margin-bottom: 0.4rem;
+        text-shadow: 0 0 8px rgba(167, 139, 250, 0.45);
+        font-family: 'Montserrat', sans-serif;
+    }
+
+    .constellation-star-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.45rem;
+        margin-top: 0.32rem;
+        font-size: 0.76rem;
+        color: #a0aec0;
+    }
+
+    .constellation-star-dot {
+        width: 0.58rem;
+        height: 0.58rem;
+        border-radius: 999px;
+        flex: 0 0 auto;
+        margin-top: 0.18rem;
+        box-shadow: 0 0 8px currentColor;
     }
 
     /* Special Signal panel - mysterious mint/yellow accent for notable events */
@@ -797,6 +838,86 @@ def render_lunar_section(lunar, target_date=None):
     """), unsafe_allow_html=True)
 
 
+def render_constellation_svg(points, lines, size=128):
+    """Render a compact inline SVG constellation diagram."""
+    line_markup = []
+    for start_index, end_index in lines:
+        if start_index >= len(points) or end_index >= len(points):
+            continue
+        start = points[start_index]
+        end = points[end_index]
+        line_markup.append(
+            f'<line x1="{start["x"]}" y1="{start["y"]}" x2="{end["x"]}" y2="{end["y"]}" '
+            'stroke="rgba(196, 181, 253, 0.45)" stroke-width="1.2"/>'
+        )
+
+    point_markup = []
+    for point in points:
+        point_markup.append(
+            f'<circle cx="{point["x"]}" cy="{point["y"]}" r="2.8" fill="{point["color"]}" '
+            f'style="filter: drop-shadow(0 0 5px {point["color"]});"/>'
+        )
+
+    return f"""
+    <svg width="{size}" height="{size}" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Constellation diagram">
+        <rect width="100" height="100" rx="10" fill="rgba(7, 12, 26, 0.78)" stroke="rgba(167, 139, 250, 0.22)"/>
+        <circle cx="12" cy="18" r="0.8" fill="rgba(228, 236, 255, 0.45)"/>
+        <circle cx="84" cy="20" r="0.7" fill="rgba(228, 236, 255, 0.35)"/>
+        <circle cx="17" cy="79" r="0.6" fill="rgba(228, 236, 255, 0.30)"/>
+        <circle cx="87" cy="74" r="0.9" fill="rgba(228, 236, 255, 0.42)"/>
+        {''.join(line_markup)}
+        {''.join(point_markup)}
+    </svg>
+    """
+
+
+def render_constellation_signal(constellation_signal):
+    """Render the Constellation Signal card."""
+    if constellation_signal is None or not constellation_signal.get("has_constellation"):
+        message = (
+            constellation_signal.get("message")
+            if constellation_signal is not None
+            else "No featured constellation signal available for this observing window."
+        )
+        st.markdown(_flatten_html(f"""
+        <div class="constellation-card">
+            <div class="constellation-card-title">✨ Constellation Signal</div>
+            <div style="font-size: 0.82rem; color: #a0aec0;">{message}</div>
+        </div>
+        """), unsafe_allow_html=True)
+        return
+
+    diagram_svg = render_constellation_svg(
+        constellation_signal["diagram_points"],
+        constellation_signal["diagram_lines"],
+        size=112,
+    )
+    stars_html = "\n".join(_flatten_html(f"""
+        <div class="constellation-star-row">
+            <span class="constellation-star-dot" style="background: {star['display_color']}; color: {star['display_color']};"></span>
+            <span><strong style="color: #e4ecff;">{star['name']}</strong> — {star['descriptor']}</span>
+        </div>
+    """) for star in constellation_signal["stars"])
+
+    st.markdown(_flatten_html(f"""
+    <div class="constellation-card">
+        <div class="constellation-card-title">✨ Constellation Signal</div>
+        <div style="display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap;">
+            <div>{diagram_svg}</div>
+            <div style="flex: 1; min-width: 135px;">
+                <div style="font-size: 1.08rem; color: #e4ecff; font-weight: bold;">{constellation_signal['name']}</div>
+                <div style="font-size: 0.78rem; color: #b4d7ff; margin-top: 0.2rem;">{constellation_signal['description']}</div>
+                <div style="font-size: 0.74rem; color: #a0aec0; margin-top: 0.35rem;">{constellation_signal['best_viewing_note']}</div>
+                <div style="font-size: 0.74rem; color: #a0aec0;">{constellation_signal['visibility_summary']}</div>
+            </div>
+        </div>
+        <div style="border-top: 1px solid rgba(167, 139, 250, 0.22); margin-top: 0.7rem; padding-top: 0.45rem;">
+            {stars_html}
+        </div>
+    </div>
+    """), unsafe_allow_html=True)
+
+
 def _flatten_html(html):
     """Strip leading whitespace from every line of an HTML fragment.
 
@@ -1352,6 +1473,11 @@ def main():
             meteor_activity = None
 
         try:
+            constellation_signal = get_constellation_signal(location, target_date=target_date)
+        except Exception:
+            constellation_signal = None
+
+        try:
             special_activity = get_special_signal(location, target_date=target_date)
         except Exception:
             special_activity = None
@@ -1425,14 +1551,17 @@ def main():
             render_weather_section(conditions, target_date)
             st.divider()
 
-        if lunar is not None or meteor_activity is not None:
-            col_lunar, col_meteor = st.columns(2)
+        if lunar is not None or meteor_activity is not None or constellation_signal is not None:
+            col_lunar, col_meteor, col_constellation = st.columns(3)
             with col_lunar:
                 if lunar is not None:
                     render_lunar_section(lunar, target_date)
             with col_meteor:
                 if meteor_activity is not None:
                     render_meteor_main(meteor_activity, target_date)
+            with col_constellation:
+                if constellation_signal is not None:
+                    render_constellation_signal(constellation_signal)
             st.divider()
 
         render_special_signal(special_activity, target_date)
